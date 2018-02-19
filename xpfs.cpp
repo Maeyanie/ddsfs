@@ -30,68 +30,12 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fuse.h>
+#include <turbojpeg.h>
+#include <libdxt.h>
 
 #ifndef DEBUG
 #define DEBUG 0
 #endif
-
-static char* basepath;
-
-static int xpfs_opt_proc(void *data, const char *arg, int key, struct fuse_args *outargs) {
-	if (key == FUSE_OPT_KEY_NONOPT && basepath == NULL) {
-		basepath = strdup(arg);
-		return 0;
-	}
-	return 1;
-}
-
-static void xpfs_convert(char* src, char* dst) {
-	struct timeb start, end;
-	int res;
-	if (DEBUG) {
-		printf("convert: Running '%s %s %s'", CONVERT, src, dst);
-		ftime(&start);
-	}
-	res = fork();
-	if (!res) {
-		execlp(CONVERT, CONVERT, src, dst, NULL);
-		exit(1);
-	}
-	waitpid(res, &res, 0);
-	if (DEBUG) {
-		ftime(&end);
-		int diff = (1000.0 * (end.time - start.time) + (end.millitm - start.millitm));
-		printf("convert: Returned %d in %d ms.\n", res, diff);
-	}
-}
-
-#if defined(NVCOMPRESS)
-
-static void xpfs_dds(char* src, char* dst) {
-	struct timeb start, end;
-	if (DEBUG) {
-		printf("nvcompress: Running '%s -fast %s %s'", NVCOMPRESS, src, dst);
-		ftime(&start);
-	}
-	res = fork();
-	if (!res) {
-		execlp(NVCOMPRESS, NVCOMPRESS, "-fast", src, dst, NULL);
-		exit(1);
-	}
-	waitpid(res, &res, 0);
-	if (DEBUG) {
-		ftime(&end);
-		int diff = (1000.0 * (end.time - start.time) + (end.millitm - start.millitm));
-		printf("nvcompress: Returned %d in %d ms.\n", res, diff);
-	}
-}
-
-#elif defined(TURBOJPEG)
-#include <turbojpeg.h>
-/*#define NEW_OPTIMISATIONS
-#include "stb_dxt.h"*/
-#include <libdxt.h>
-void halveimage(const unsigned char* src, int width, int height, unsigned char* dst);
 
 struct DDS_PIXELFORMAT {
 	unsigned int dwSize;
@@ -120,8 +64,18 @@ struct ddsheader {
 	unsigned int dwCaps4;
 	unsigned int dwReserved2;
 };
+void halveimage(const unsigned char* src, int width, int height, unsigned char* dst);
 
-// 400-450 ms total (60-80 ms JPEG, 320-340 ms DDS)
+static char* basepath;
+
+static int xpfs_opt_proc(void *data, const char *arg, int key, struct fuse_args *outargs) {
+	if (key == FUSE_OPT_KEY_NONOPT && basepath == NULL) {
+		basepath = strdup(arg);
+		return 0;
+	}
+	return 1;
+}
+
 static void xpfs_dds(char* src, char* dst) {
 	struct timeb start, mid, end;
 	
@@ -199,8 +153,6 @@ static void xpfs_dds(char* src, char* dst) {
 	}
 	write(fd, &header, sizeof(header));
 
-	//rygCompress(dds, rgba, width, height, 0);
-	//CompressDXT(rgba, dds, width, height, FORMAT_DXT1, 1);
 	int bytes;
 	CompressImageDXT1(rgba, dds, width, height, bytes);
 	if (bytes != width * height / 2) printf("turbojpeg: DXT data size %d, expected %d.\n", bytes, width * height / 2);
@@ -236,17 +188,6 @@ static void xpfs_dds(char* src, char* dst) {
 		printf("turbojpeg: Total time %d ms.\n", diff);
 	}
 }
-
-#else
-
-// 4900-5000 ms
-static void xpfs_dds(char* src, char* dst) {
-	xpfs_convert(src, dst);
-}
-	
-#endif
-
-
 
 static int xpfs_getattr(const char *path, struct stat *stbuf)
 {
@@ -313,15 +254,6 @@ static int xpfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 			} else {
 				if (DEBUG >= 3) printf("\t\tSkipped .dds\n");
 			}
-			
-			/*strcpy(ext, ".png");
-			sprintf(testpath, "%s/%s", rwpath, rwname);
-			if (stat(testpath, &st) == -1) {
-				filler(buf, rwname, &st, 0);
-				if (DEBUG >= 3) printf("\t\tAdded .png\n");
-			} else {
-				if (DEBUG >= 3) printf("\t\tSkipped .png\n");
-			}*/
 		}
 	}
 
@@ -357,19 +289,6 @@ static int xpfs_open(const char *path, struct fuse_file_info *fi)
 			
 			res = open(rwpath, fi->flags);
 			if (res == -1) return -errno;
-		/*} else if (!strcasecmp(ext, ".png")) {
-			if (DEBUG) printf("\tOpening .png which does not exist.\n");
-			char* srcpath = strdupa(rwpath);
-			ext = strrchr(srcpath, '.');
-			strcpy(ext, ".jpg");
-
-			res = stat(srcpath, &st);
-			if (res) return -errno;
-			
-			xpfs_convert(srcpath, rwpath);
-			
-			res = open(rwpath, fi->flags);
-			if (res == -1) return -errno;*/
 		} else {
 			return -errno;
 		}
