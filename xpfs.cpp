@@ -40,17 +40,17 @@ struct CacheEntry {
 	unsigned int len;
 };
 
-struct Config {
-	char* basepath;
-	int cache;
-	int compress;
-} config;
+struct Config config;
 #define XPFS_OPT(t, p, v) { t, offsetof(struct Config, p), v }
 static struct fuse_opt xpfs_opts[] = {
-	XPFS_OPT("dxt1",		compress, 1),
-	XPFS_OPT("rgb",			compress, 0),
-	XPFS_OPT("cache",		cache, 1),
-	XPFS_OPT("nocache",		cache, 0),
+	XPFS_OPT("dxt1",			compress, 1),
+	XPFS_OPT("rgb",				compress, 0),
+	XPFS_OPT("cache",			cache, 1),
+	XPFS_OPT("nocache",			cache, 0),
+	XPFS_OPT("debug",			debug, 1),
+	XPFS_OPT("debug=%i",		debug, 0),
+	XPFS_OPT("--debug",			debug, 1),
+	XPFS_OPT("--debug=%i",		debug, 0),
 	FUSE_OPT_END
 };
 
@@ -226,10 +226,10 @@ static int xpfs_read(const char *path, char *buf, size_t size, off_t offset,
 		if (DEBUG >= 2) printf("read: Uncached mode, looking for FD %d.\n", fd);
 		auto i = memcache.find(fd);
 		if (i != memcache.end()) {
-			if (DEBUG >= 2) printf("read: %d bytes at %d from memory for FD %d.\n", size, offset, i->first);
+			if (DEBUG >= 2) printf("read: %lu bytes at %ld from memory for FD %d.\n", size, offset, i->first);
 			if (size+offset > i->second.len) {
 				size = (i->second.len)-offset;
-				if (DEBUG) printf("read: Read would have exceeded length, reducing to %d.\n", size);
+				if (DEBUG) printf("read: Read would have exceeded length, reducing to %lu.\n", size);
 			}
 			memcpy(buf, (i->second.data)+offset, size);
 			pthread_mutex_unlock(&cachelock);
