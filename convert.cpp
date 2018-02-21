@@ -155,7 +155,6 @@ int xpfs_dds_dxt1(char* src, unsigned char** dst) {
 		dstpos += bytes;
 		if (DEBUG >= 2) printf("DXT1: Done mip %d.\n", curmip);
 	}
-	close(fd);
 	free(rgba);
 	
 	
@@ -199,23 +198,8 @@ int xpfs_dds_rgb(char* src, unsigned char** dst) {
 		return -1;
 	}
 	
-	unsigned char* rgba = (unsigned char*)memalign(16, width * height * 4);
-	if (tjDecompress2(tj, jpeg, size, rgba, 0, 0, 0, TJPF_BGRA, TJFLAG_FASTDCT|TJFLAG_FASTUPSAMPLE) == -1) {
-		fprintf(stderr, "RGB: Could not decode image for '%s': %s\n", src, tjGetErrorStr());
-		free(jpeg);
-		free(rgba);
-		return -1;
-	}
-	free(jpeg);
 	
-	tjDestroy(tj);
-	
-	if (DEBUG) {
-		ftime(&mid);
-		int diff = (1000.0 * (mid.time - start.time) + (mid.millitm - start.millitm));
-		printf("RGB: JPEG decode done in %d ms.\n", diff);
-	}
-
+	// We know the dimensions, preallocate everything.
 	DDS_HEADER header;
 	memset(&header, 0, sizeof(header));
 	header.dwMagic = 0x20534444;
@@ -244,43 +228,52 @@ int xpfs_dds_rgb(char* src, unsigned char** dst) {
 	header.ddspf = ddspix;
 	
 	header.dwCaps = 0x1000 | 0x8 | 0x400000;
-
+	
 	*dst = (unsigned char*)memalign(16, totalsize);
 	unsigned char* dstpos = *dst;
 
 	memcpy(dstpos, &header, sizeof(header));
 	dstpos += sizeof(header);
+	
+	
+	// Decompress straight into the output buffer.
+	if (tjDecompress2(tj, jpeg, size, dstpos, 0, 0, 0, TJPF_BGRA, TJFLAG_FASTDCT|TJFLAG_FASTUPSAMPLE) == -1) {
+		fprintf(stderr, "RGB: Could not decode image for '%s': %s\n", src, tjGetErrorStr());
+		free(jpeg);
+		free(*dst);
+		(*dst) = 0;
+		return -1;
+	}
+	free(jpeg);
+	int bytes = width * height * 4;
+	dstpos += bytes;	
+	tjDestroy(tj);
+	
+	if (DEBUG) {
+		ftime(&mid);
+		int diff = (1000.0 * (mid.time - start.time) + (mid.millitm - start.millitm));
+		printf("RGB: JPEG decode done in %d ms.\n", diff);
+	}
 
-	int bytes;
-	bytes = width * height * 4;
-	memcpy(dstpos, rgba, bytes);
-	dstpos += bytes;
 
 	int curmip = 0;
 	while (width > 8 && height > 8) {
 		if (DEBUG >= 2) printf("RGB: Resample mip %d (%d x %d)\n", ++curmip, width, height);
 		unsigned char* nextmip = (unsigned char*)memalign(16, width * height * 4);
-		halveimage(rgba, width, height, nextmip);
+		halveimage(dstpos-bytes, width, height, dstpos);
 		width >>= 1;
 		height >>= 1;
-		free(rgba);
-		rgba = nextmip;
-		
-		if (DEBUG >= 2) printf("RGB: Copy mip %d (%d x %d)\n", curmip, width, height);
 		bytes = width * height * 4;
-		memcpy(dstpos, rgba, bytes);
 		dstpos += bytes;
-		
 		if (DEBUG >= 2) printf("RGB: Done mip %d.\n", curmip);
 	}
-	close(fd);
-	free(rgba);
+	
 	if (DEBUG >= 2) printf("RGB: Wrote a total of %d bytes.\n", (int)(dstpos-(*dst)));
 	
 	if (DEBUG) {
 		ftime(&end);
 		int diff = (1000.0 * (end.time - mid.time) + (end.millitm - mid.millitm));
-		printf("RGB: RGB encode done in %d ms.\n", diff);
+		printf("RGB: Mipmap generation done in %d ms.\n", diff);
 		diff = (1000.0 * (end.time - start.time) + (end.millitm - start.millitm));
 		printf("RGB: Total time %d ms.\n", diff);
 	}
