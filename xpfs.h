@@ -12,10 +12,16 @@ extern struct Config {
 	int debug;
 } config;
 
+extern inline int poweroftwo(unsigned int x) {
+  return !(x & (x - 1));
+}
+
 void halveimage(const unsigned char* src, int width, int height, unsigned char* dst);
 
-int xpfs_dds_dxt1(char* src, unsigned char** dst);
-int xpfs_dds_rgb(char* src, unsigned char** dst);
+int xpfs_jpg_dxt1(char* src, unsigned char** dst);
+int xpfs_jpg_rgb(char* src, unsigned char** dst);
+int xpfs_webp_dxt1(char* src, unsigned char** dst);
+int xpfs_webp_rgb(char* src, unsigned char** dst);
 
 
 #endif

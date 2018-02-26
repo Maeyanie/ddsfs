@@ -48,7 +48,9 @@ struct DDS_HEADER {
 	unsigned int dwReserved2;
 };
 
-int xpfs_dds_dxt1(char* src, unsigned char** dst) {
+
+
+int xpfs_jpg_dxt1(char* src, unsigned char** dst) {
 	struct timeb start, mid, end;
 	
 	if (DEBUG) {
@@ -74,18 +76,27 @@ int xpfs_dds_dxt1(char* src, unsigned char** dst) {
 	if (tjDecompressHeader3(tj, jpeg, size, &width, &height, &subsamp, &colourspace) == -1) {
 		fprintf(stderr, "DXT1: Could not decode header for '%s': %s\n", src, tjGetErrorStr());
 		free(jpeg);
+		tjDestroy(tj);
 		return -1;
 	}
+	if (DEBUG >= 2) printf("DXT1: Decoded %d x %d JPEG.\n", width, height);
 	
-	unsigned char* rgba = (unsigned char*)memalign(16, width * height * 4);
+	if (!poweroftwo(width) || !poweroftwo(height)) {
+		if (DEBUG) printf("DXT1: Not a power-of-two texture, falling back to RGB.\n");
+		free(jpeg);
+		tjDestroy(tj);
+		return xpfs_jpg_rgb(src, dst);
+	}
+	
+	unsigned char* rgba = (unsigned char*)memalign(16, width*height*4);
 	if (tjDecompress2(tj, jpeg, size, rgba, 0, 0, 0, TJPF_RGBA, TJFLAG_FASTDCT|TJFLAG_FASTUPSAMPLE) == -1) {
 		fprintf(stderr, "DXT1: Could not decode image for '%s': %s\n", src, tjGetErrorStr());
 		free(jpeg);
 		free(rgba);
+		tjDestroy(tj);
 		return -1;
 	}
 	free(jpeg);
-	
 	tjDestroy(tj);
 	
 	if (DEBUG) {
@@ -94,23 +105,26 @@ int xpfs_dds_dxt1(char* src, unsigned char** dst) {
 		printf("DXT1: JPEG decode done in %d ms.\n", diff);
 	}
 
-	unsigned char* dds = (unsigned char*)memalign(16, width * height * 4);
 	DDS_HEADER header;
 	memset(&header, 0, sizeof(header));
 	header.dwMagic = 0x20534444;
 	header.dwSize = 124;
-	header.dwFlags = 0x1 | 0x2 | 0x4 | 0x1000 | 0x20000;
+	header.dwFlags = 0x1 | 0x2 | 0x4 | 0x1000;
 	header.dwHeight = height;
 	header.dwWidth = width;
+	header.dwCaps = 0x1000;
 	
 	int mips = 0;
 	int totalsize = sizeof(header);
-	while ((height >> mips) >= 8 && (width >> mips) >= 8) {
+	while ((height >> mips) > 8 && (width >> mips) > 8) {
 		totalsize += (height >> mips) * (width >> mips) / 2;
 		mips++;
 	}
-	if (DEBUG) printf("DXT1: Allocating %d bytes for %d mips.\n", totalsize, mips);
+	mips++;
+	if (DEBUG) printf("DXT1: Allocating %d bytes for %d mip%s.\n", totalsize, mips, mips==1?"":"s");
+	header.dwFlags |= 0x20000;
 	header.dwMipMapCount = mips;
+	header.dwCaps |= 0x8 | 0x400000;
 	
 	DDS_PIXELFORMAT ddspix;
 	memset(&ddspix, 0, sizeof(ddspix));
@@ -118,8 +132,6 @@ int xpfs_dds_dxt1(char* src, unsigned char** dst) {
 	ddspix.dwFlags = 0x4;
 	ddspix.dwFourCC = 'D' | 'X'<<8 | 'T'<<16 | '1'<<24;
 	header.ddspf = ddspix;
-	
-	header.dwCaps = 0x1000 | 0x8 | 0x400000;
 
 	*dst = (unsigned char*)memalign(16, totalsize);
 	unsigned char* dstpos = *dst;
@@ -127,33 +139,27 @@ int xpfs_dds_dxt1(char* src, unsigned char** dst) {
 	memcpy(dstpos, &header, sizeof(header));
 	dstpos += sizeof(header);
 
+	unsigned char* dds = (unsigned char*)memalign(16, width*height*4);
 	int bytes;
-	CompressImageDXT1(rgba, dds, width, height, bytes);
-	if (bytes != width * height / 2) printf("DXT1: DXT data size %d, expected %d.\n", bytes, width * height / 2);
-	memcpy(dstpos, dds, bytes);
+	CompressImageDXT1(rgba, dstpos, width, height, bytes);
 	dstpos += bytes;
 
-	*dst = (unsigned char*)realloc(*dst, totalsize + bytes);
-	memcpy((*dst) + totalsize, dds, bytes);
-	totalsize += bytes;
-
 	int curmip = 0;
-	while (width > 8 && height > 8) {
-		if (DEBUG >= 2) printf("DXT1: Resample mip %d (%d x %d)\n", ++curmip, width, height);
-		unsigned char* nextmip = (unsigned char*)memalign(16, width * height * 4);
-		halveimage(rgba, width, height, nextmip);
-		width >>= 1;
-		height >>= 1;
-		free(rgba);
-		rgba = nextmip;
-		
-		if (DEBUG >= 2) printf("DXT1: Compress mip %d (%d x %d)\n", curmip, width, height);
-		CompressImageDXT1(rgba, dds, width, height, bytes);
-		if (bytes != width * height / 2) printf("DXT1: DXT data size %d, expected %d.\n", bytes, width * height / 2);
-		
-		memcpy(dstpos, dds, bytes);
-		dstpos += bytes;
-		if (DEBUG >= 2) printf("DXT1: Done mip %d.\n", curmip);
+	if (mips > 0) {
+		while (width > 8 && height > 8) {
+			if (DEBUG >= 2) printf("DXT1: Resample mip %d (%d x %d)\n", ++curmip, width, height);
+			unsigned char* nextmip = (unsigned char*)memalign(16, width * height * 4);
+			halveimage(rgba, width, height, nextmip);
+			width >>= 1;
+			height >>= 1;
+			free(rgba);
+			rgba = nextmip;
+			
+			if (DEBUG >= 2) printf("DXT1: Compress mip %d (%d x %d)\n", curmip, width, height);
+			CompressImageDXT1(rgba, dstpos, width, height, bytes);
+			dstpos += bytes;
+			if (DEBUG >= 2) printf("DXT1: Done mip %d.\n", curmip);
+		}
 	}
 	free(rgba);
 	
@@ -169,7 +175,7 @@ int xpfs_dds_dxt1(char* src, unsigned char** dst) {
 }
 
 
-int xpfs_dds_rgb(char* src, unsigned char** dst) {
+int xpfs_jpg_rgb(char* src, unsigned char** dst) {
 	struct timeb start, mid, end;
 	
 	if (DEBUG) {
@@ -204,18 +210,27 @@ int xpfs_dds_rgb(char* src, unsigned char** dst) {
 	memset(&header, 0, sizeof(header));
 	header.dwMagic = 0x20534444;
 	header.dwSize = 124;
-	header.dwFlags = 0x1 | 0x2 | 0x4 | 0x1000 | 0x20000;
+	header.dwFlags = 0x1 | 0x2 | 0x4 | 0x1000;
 	header.dwHeight = height;
 	header.dwWidth = width;
+	header.dwCaps = 0x1000;
 	
 	int mips = 0;
 	int totalsize = sizeof(header);
-	while ((height >> mips) >= 8 && (width >> mips) >= 8) {
-		totalsize += (height >> mips) * (width >> mips) * 4;
+	if (poweroftwo(width) && poweroftwo(height)) {
+		while ((height >> mips) > 8 && (width >> mips) > 8) {
+			totalsize += (height >> mips) * (width >> mips) * 4;
+			mips++;
+		}
 		mips++;
+		if (DEBUG) printf("RGB: Allocating %d bytes for %d mip%s.\n", totalsize, mips, mips==1?"":"s");
+		header.dwFlags |= 0x20000;
+		header.dwMipMapCount = mips;
+		header.dwCaps |= 0x8 | 0x400000;
+	} else {
+		totalsize += width * height * 4;
+		if (DEBUG) printf("RGB: Allocating %d bytes for non-power-of-two texture.\n", totalsize);
 	}
-	if (DEBUG) printf("RGB: Allocating %d bytes for %d mips.\n", totalsize, mips);
-	header.dwMipMapCount = mips;
 	
 	DDS_PIXELFORMAT ddspix;
 	memset(&ddspix, 0, sizeof(ddspix));
@@ -227,9 +242,7 @@ int xpfs_dds_rgb(char* src, unsigned char** dst) {
 	ddspix.dwBBitMask = 0x000000FF;
 	header.ddspf = ddspix;
 	
-	header.dwCaps = 0x1000 | 0x8 | 0x400000;
-	
-	*dst = (unsigned char*)memalign(16, totalsize);
+	*dst = (unsigned char*)memalign(16, totalsize+16);
 	unsigned char* dstpos = *dst;
 
 	memcpy(dstpos, &header, sizeof(header));
@@ -256,16 +269,18 @@ int xpfs_dds_rgb(char* src, unsigned char** dst) {
 	}
 
 
-	int curmip = 0;
-	while (width > 8 && height > 8) {
-		if (DEBUG >= 2) printf("RGB: Resample mip %d (%d x %d)\n", ++curmip, width, height);
-		unsigned char* nextmip = (unsigned char*)memalign(16, width * height * 4);
-		halveimage(dstpos-bytes, width, height, dstpos);
-		width >>= 1;
-		height >>= 1;
-		bytes = width * height * 4;
-		dstpos += bytes;
-		if (DEBUG >= 2) printf("RGB: Done mip %d.\n", curmip);
+	if (mips > 0) {
+		int curmip = 0;
+		while (width > 8 && height > 8) {
+			if (DEBUG >= 2) printf("RGB: Resample mip %d (%d x %d)\n", ++curmip, width, height);
+			unsigned char* nextmip = (unsigned char*)memalign(16, width * height * 4);
+			halveimage(dstpos-bytes, width, height, dstpos);
+			width >>= 1;
+			height >>= 1;
+			bytes = width * height * 4;
+			dstpos += bytes;
+			if (DEBUG >= 2) printf("RGB: Done mip %d.\n", curmip);
+		}
 	}
 	
 	if (DEBUG >= 2) printf("RGB: Wrote a total of %d bytes.\n", (int)(dstpos-(*dst)));

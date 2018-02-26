@@ -79,10 +79,16 @@ static int xpfs_getattr(const char *path, struct stat *stbuf)
 	if (res == -1) {
 		ext = strrchr(rwpath, '.');
 		if (!ext) return -errno;
-		if (!strcasecmp(ext, ".dds") || !strcasecmp(ext, ".png")) {
+		if (!strcasecmp(ext, ".dds")) {
 			strcpy(ext, ".jpg");
 			res = lstat(rwpath, stbuf);
-			if (res == -1) return -errno;
+			if (res == 0) return 0;
+			
+			strcpy(ext, ".webp");
+			res = lstat(rwpath, stbuf);
+			if (res == 0) return 0;
+			
+			return -errno;
 		} else return -errno;
 	}
 
@@ -119,9 +125,23 @@ static int xpfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		char* rwname = strdupa(de->d_name);
 		ext = strrchr(rwname, '.');
 		if (DEBUG >= 3) printf("\t\tpath='%s' ext='%s'\n", rwname, ext);
-		if (ext && !strcasecmp(ext, ".jpg")) {
+		if (!ext) {
+			// Meh.
+		} else if (!strcasecmp(ext, ".jpg")) {
 			char testpath[strlen(rwpath)+strlen(rwname)+2];
 			if (DEBUG >= 3) printf("\tFound .jpg file.\n");
+
+			strcpy(ext, ".dds");
+			sprintf(testpath, "%s/%s", rwpath, rwname);
+			if (stat(testpath, &st) == -1) {
+				filler(buf, rwname, &st, 0);
+				if (DEBUG >= 3) printf("\t\tAdded .dds\n");
+			} else {
+				if (DEBUG >= 3) printf("\t\tSkipped .dds\n");
+			}
+		} else if (!strcasecmp(ext, ".webp")) {
+			char testpath[strlen(rwpath)+strlen(rwname)+2];
+			if (DEBUG >= 3) printf("\tFound .webp file.\n");
 
 			strcpy(ext, ".dds");
 			sprintf(testpath, "%s/%s", rwpath, rwname);
@@ -155,19 +175,36 @@ static int xpfs_open(const char *path, struct fuse_file_info *fi)
 		if (!ext) return -errno;
 		if (!strcasecmp(ext, ".dds")) {
 			if (DEBUG) printf("\tOpening .dds which does not exist.\n");
-			char* srcpath = strdupa(rwpath);
+			char srcpath[strlen(rwpath)+2];
+			unsigned char* dds = NULL;
+			int len = 0;
+			
+			// Try to decode a .jpg alternate
+			strcpy(srcpath, rwpath);
 			ext = strrchr(srcpath, '.');
 			strcpy(ext, ".jpg");
-			
-			
 			res = stat(srcpath, &st);
-			if (res) return -errno;
+			if (res == 0) {
+				if (config.compress) len = xpfs_jpg_dxt1(srcpath, &dds);
+				else len = xpfs_jpg_rgb(srcpath, &dds);
+				if (len == -1) return -errno;
+			}
 			
-			unsigned char* dds;
-			int len;
-			if (config.compress) len = xpfs_dds_dxt1(srcpath, &dds);
-			else len = xpfs_dds_rgb(srcpath, &dds);
-			if (len == -1) return -errno;
+			if (!dds) {
+				// Try to decode a .webp alternate.
+				strcpy(srcpath, rwpath);
+				ext = strrchr(srcpath, '.');
+				strcpy(ext, ".webp");
+				res = stat(srcpath, &st);
+				if (res == 0) {
+					if (config.compress) len = xpfs_webp_dxt1(srcpath, &dds);
+					else len = xpfs_webp_rgb(srcpath, &dds);
+					if (len == -1) return -errno;
+				}
+			}
+			
+			// Failed to decode another file, bail out.
+			if (!dds) return -ENOENT;
 			
 			if (config.cache) {
 				if (DEBUG >= 2) printf("cache: Writing %d bytes to '%s'\n", len, rwpath);
