@@ -17,7 +17,7 @@ inline static unsigned int avg4(const unsigned int a[2], const unsigned int b[2]
 
 inline static void average2Rows(const unsigned int* src_row1, const unsigned int* src_row2, unsigned int* dst_row, int w) {
 #if !defined(__SSE__)
-#warning Warning: Compiled without SSE support.
+#warning Warning: Compiling without SSE support.
 	for (int x = w; x; --x, dst_row++, src_row1 += 2, src_row2 += 2) {
 		*dst_row = avg4(src_row1, src_row2);
 	}

@@ -18,7 +18,7 @@
 #include <errno.h>
 #include <turbojpeg.h>
 #include <libdxt.h>
-#include "xpfs.h"
+#include "ddsfs.h"
 
 struct DDS_PIXELFORMAT {
 	unsigned int dwSize;
@@ -50,7 +50,7 @@ struct DDS_HEADER {
 
 
 
-int xpfs_jpg_dxt1(char* src, unsigned char** dst) {
+int ddsfs_jpg_dxt1(char* src, unsigned char** dst) {
 	struct timeb start, mid, end;
 	
 	if (DEBUG) {
@@ -85,7 +85,7 @@ int xpfs_jpg_dxt1(char* src, unsigned char** dst) {
 		if (DEBUG) printf("DXT1: Not a power-of-two texture, falling back to RGB.\n");
 		free(jpeg);
 		tjDestroy(tj);
-		return xpfs_jpg_rgb(src, dst);
+		return ddsfs_jpg_rgb(src, dst);
 	}
 	
 	unsigned char* rgba = (unsigned char*)memalign(16, width*height*4);
@@ -175,7 +175,7 @@ int xpfs_jpg_dxt1(char* src, unsigned char** dst) {
 }
 
 
-int xpfs_jpg_rgb(char* src, unsigned char** dst) {
+int ddsfs_jpg_rgb(char* src, unsigned char** dst) {
 	struct timeb start, mid, end;
 	
 	if (DEBUG) {

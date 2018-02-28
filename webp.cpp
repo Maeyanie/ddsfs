@@ -18,7 +18,7 @@
 #include <errno.h>
 #include <webp/decode.h>
 #include <libdxt.h>
-#include "xpfs.h"
+#include "ddsfs.h"
 
 struct DDS_PIXELFORMAT {
 	unsigned int dwSize;
@@ -50,7 +50,7 @@ struct DDS_HEADER {
 
 
 
-int xpfs_webp_dxt1(char* src, unsigned char** dst) {
+int ddsfs_webp_dxt1(char* src, unsigned char** dst) {
 	struct timeb start, mid, end;
 	
 	if (DEBUG) {
@@ -85,7 +85,7 @@ int xpfs_webp_dxt1(char* src, unsigned char** dst) {
 	if (!poweroftwo(width) || !poweroftwo(height)) {
 		if (DEBUG) printf("DXT: Not a power-of-two texture, falling back to RGB.\n");
 		free(webp);
-		return xpfs_webp_rgb(src, dst);
+		return ddsfs_webp_rgb(src, dst);
 	}
 	
 	unsigned char* rgba = (unsigned char*)memalign(16, width*height*4);
@@ -193,7 +193,7 @@ int xpfs_webp_dxt1(char* src, unsigned char** dst) {
 }
 
 
-int xpfs_webp_rgb(char* src, unsigned char** dst) {
+int ddsfs_webp_rgb(char* src, unsigned char** dst) {
 	struct timeb start, mid, end;
 	
 	if (DEBUG) {

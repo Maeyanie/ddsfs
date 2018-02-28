@@ -32,7 +32,7 @@
 #include <fuse.h>
 #include <atomic>
 #include <unordered_map>
-#include "xpfs.h"
+#include "ddsfs.h"
 using namespace std;
 
 struct CacheEntry {
@@ -41,16 +41,16 @@ struct CacheEntry {
 };
 
 struct Config config;
-#define XPFS_OPT(t, p, v) { t, offsetof(struct Config, p), v }
-static struct fuse_opt xpfs_opts[] = {
-	XPFS_OPT("dxt1",			compress, 1),
-	XPFS_OPT("rgb",				compress, 0),
-	XPFS_OPT("cache",			cache, 1),
-	XPFS_OPT("nocache",			cache, 0),
-	XPFS_OPT("debug",			debug, 1),
-	XPFS_OPT("debug=%i",		debug, 0),
-	XPFS_OPT("--debug",			debug, 1),
-	XPFS_OPT("--debug=%i",		debug, 0),
+#define DDSFS_OPT(t, p, v) { t, offsetof(struct Config, p), v }
+static struct fuse_opt ddsfs_opts[] = {
+	DDSFS_OPT("dxt1",			compress, 1),
+	DDSFS_OPT("rgb",				compress, 0),
+	DDSFS_OPT("cache",			cache, 1),
+	DDSFS_OPT("nocache",			cache, 0),
+	DDSFS_OPT("debug",			debug, 1),
+	DDSFS_OPT("debug=%i",		debug, 0),
+	DDSFS_OPT("--debug",			debug, 1),
+	DDSFS_OPT("--debug=%i",		debug, 0),
 	FUSE_OPT_END
 };
 
@@ -58,7 +58,7 @@ static unordered_map<int,CacheEntry> memcache;
 static int nextfd = 100;
 static pthread_mutex_t cachelock = PTHREAD_MUTEX_INITIALIZER;
 
-static int xpfs_opt_proc(void *data, const char *arg, int key, struct fuse_args *outargs) {
+static int ddsfs_opt_proc(void *data, const char *arg, int key, struct fuse_args *outargs) {
 	if (key == FUSE_OPT_KEY_NONOPT && config.basepath == NULL) {
 		config.basepath = strdup(arg);
 		return 0;
@@ -66,7 +66,7 @@ static int xpfs_opt_proc(void *data, const char *arg, int key, struct fuse_args 
 	return 1;
 }
 
-static int xpfs_getattr(const char *path, struct stat *stbuf)
+static int ddsfs_getattr(const char *path, struct stat *stbuf)
 {
 	int res;
 	char rwpath[strlen(config.basepath)+strlen(path)+2];
@@ -95,7 +95,7 @@ static int xpfs_getattr(const char *path, struct stat *stbuf)
 	return 0;
 }
 
-static int xpfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
+static int ddsfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		       off_t offset, struct fuse_file_info *fi)
 {
 	DIR *dp;
@@ -159,7 +159,7 @@ static int xpfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	return 0;
 }
 
-static int xpfs_open(const char *path, struct fuse_file_info *fi)
+static int ddsfs_open(const char *path, struct fuse_file_info *fi)
 {
 	int res;
 	char rwpath[strlen(config.basepath)+strlen(path)+2];
@@ -185,8 +185,8 @@ static int xpfs_open(const char *path, struct fuse_file_info *fi)
 			strcpy(ext, ".jpg");
 			res = stat(srcpath, &st);
 			if (res == 0) {
-				if (config.compress) len = xpfs_jpg_dxt1(srcpath, &dds);
-				else len = xpfs_jpg_rgb(srcpath, &dds);
+				if (config.compress) len = ddsfs_jpg_dxt1(srcpath, &dds);
+				else len = ddsfs_jpg_rgb(srcpath, &dds);
 				if (len == -1) return -errno;
 			}
 			
@@ -197,8 +197,8 @@ static int xpfs_open(const char *path, struct fuse_file_info *fi)
 				strcpy(ext, ".webp");
 				res = stat(srcpath, &st);
 				if (res == 0) {
-					if (config.compress) len = xpfs_webp_dxt1(srcpath, &dds);
-					else len = xpfs_webp_rgb(srcpath, &dds);
+					if (config.compress) len = ddsfs_webp_dxt1(srcpath, &dds);
+					else len = ddsfs_webp_rgb(srcpath, &dds);
 					if (len == -1) return -errno;
 				}
 			}
@@ -245,7 +245,7 @@ static int xpfs_open(const char *path, struct fuse_file_info *fi)
 	return 0;
 }
 
-static int xpfs_read(const char *path, char *buf, size_t size, off_t offset,
+static int ddsfs_read(const char *path, char *buf, size_t size, off_t offset,
 		    struct fuse_file_info *fi)
 {
 	int fd;
@@ -283,7 +283,7 @@ static int xpfs_read(const char *path, char *buf, size_t size, off_t offset,
 	return res;
 }
 
-static int xpfs_release(const char *path, struct fuse_file_info *fi)
+static int ddsfs_release(const char *path, struct fuse_file_info *fi)
 {
 	if (DEBUG >= 2) printf("release: %s\n", path);
 	if (fi == NULL || fi->fh == 0) return 0;
@@ -309,15 +309,15 @@ int main(int argc, char *argv[])
 	config.compress = 1;
 
 	struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
-	fuse_opt_parse(&args, &config, xpfs_opts, xpfs_opt_proc);
+	fuse_opt_parse(&args, &config, ddsfs_opts, ddsfs_opt_proc);
 
 	struct fuse_operations oper;
 	memset(&oper, 0, sizeof(oper));
-	oper.getattr = xpfs_getattr;
-	oper.readdir = xpfs_readdir;
-	oper.open = xpfs_open;
-	oper.read = xpfs_read;
-	oper.release = xpfs_release;
+	oper.getattr = ddsfs_getattr;
+	oper.readdir = ddsfs_readdir;
+	oper.open = ddsfs_open;
+	oper.read = ddsfs_read;
+	oper.release = ddsfs_release;
 	
 	if (config.basepath == NULL) {
 		fprintf(stderr, "Usage: %s <scenery> <mount>\n", args.argv[0]);
