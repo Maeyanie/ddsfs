@@ -18,8 +18,10 @@ In addition to the standard FUSE options, DDSFS recognizes:
 | -o rgb             | Produce DDS files as RGB/RGBA.
 | -o debug[=#]       | Writes status/debugging information. Values for # range from 1 to 3.
 
-Windows/Cygwin Example: ./ddsfs.exe . X:  
-Linux Example: ./ddsfs . /mnt/ddsfs  
+#### Windows
+DDSFS can be used on Windows with the [Dokan](http://dokan-dev.github.io/) FUSE wrapper.  
+It has been developed and tested with [1.1.0.2000](https://github.com/dokan-dev/dokany/releases/tag/v1.1.0.2000) but may work with other versions.  
+Dokan can mount on either a path or a drive letter, and directory symbolic links can be used to redirect certain paths to DDSFS.
 
 #### Formats
 Currently supported formats:  
