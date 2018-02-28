@@ -17,6 +17,12 @@
 #define _XOPEN_SOURCE 700
 #define _GNU_SOURCE
 
+#ifdef __WIN32
+#define lstat(a,b) stat(a,b)
+#else
+#include <sys/wait.h>
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,7 +30,6 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
 #include <sys/time.h> 
 #include <dirent.h>
 #include <errno.h>
@@ -66,27 +71,63 @@ static int ddsfs_opt_proc(void *data, const char *arg, int key, struct fuse_args
 	return 1;
 }
 
-static int ddsfs_getattr(const char *path, struct stat *stbuf)
+#ifdef __WIN32
+static void st2fst(struct stat* st, FUSE_STAT* fst) {
+	fst->st_dev = st->st_dev;
+	fst->st_ino = st->st_ino;
+	fst->st_mode = st->st_mode;
+	fst->st_nlink = st->st_nlink;
+	fst->st_uid = st->st_uid;
+	fst->st_gid = st->st_gid;
+	fst->st_rdev = st->st_rdev;
+	fst->st_size = st->st_size;
+	fst->st_atim.tv_sec = st->st_atime;
+	fst->st_atim.tv_nsec = 0;
+	fst->st_mtim.tv_sec = st->st_mtime;
+	fst->st_mtim.tv_nsec = 0;
+	fst->st_ctim.tv_sec = st->st_ctime;
+	fst->st_ctim.tv_nsec = 0;
+	fst->st_blksize = 4096;
+	fst->st_blocks = (st->st_size + 4095)/4096;
+	fst->st_birthtim.tv_sec = st->st_ctime;
+	fst->st_birthtim.tv_nsec = 0;
+}
+#else
+static void st2fst(struct stat* st, FUSE_STAT* fst) {
+	memcpy(fst, st, sizeof(FUSE_STAT));
+}
+#endif
+
+static int ddsfs_getattr(const char *path, FUSE_STAT *stbuf)
 {
 	int res;
 	char rwpath[strlen(config.basepath)+strlen(path)+2];
 	char* ext;
+	struct stat st;
 
 	sprintf(rwpath, "%s/%s", config.basepath, path);
 	if (DEBUG >= 2) printf("getattr: %s\n", rwpath);
 
-	res = lstat(rwpath, stbuf);
-	if (res == -1) {
+	res = lstat(rwpath, &st);
+	if (res == 0) {
+		st2fst(&st, stbuf);
+	} else {
 		ext = strrchr(rwpath, '.');
 		if (!ext) return -errno;
 		if (!strcasecmp(ext, ".dds")) {
 			strcpy(ext, ".jpg");
-			res = lstat(rwpath, stbuf);
-			if (res == 0) return 0;
+			res = lstat(rwpath, &st);
+			if (res == 0) {
+				st2fst(&st, stbuf);
+				return 0;
+			}
 			
 			strcpy(ext, ".webp");
-			res = lstat(rwpath, stbuf);
-			if (res == 0) return 0;
+			res = lstat(rwpath, &st);
+			if (res == 0) {
+				st2fst(&st, stbuf);
+				return 0;
+			}
 			
 			return -errno;
 		} else return -errno;
@@ -114,19 +155,23 @@ static int ddsfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 
 	while ((de = readdir(dp))) {
 		struct stat st;
-		memset(&st, 0, sizeof(st));
+		FUSE_STAT fst;
+		memset(&fst, 0, sizeof(st));
 		if (DEBUG >= 2) printf("\t%s\n", de->d_name);
 		
 		st.st_ino = de->d_ino;
+		#ifndef __WIN32
 		st.st_mode = de->d_type << 12;
-		if (filler(buf, de->d_name, &st, 0))
+		#endif
+		if (filler(buf, de->d_name, &fst, 0))
 			break;
 		
-		char* rwname = strdupa(de->d_name);
+		char rwname[strlen(de->d_name)+1];
+		strcpy(rwname, de->d_name);
 		ext = strrchr(rwname, '.');
 		if (DEBUG >= 3) printf("\t\tpath='%s' ext='%s'\n", rwname, ext);
 		if (!ext) {
-			// Meh.
+			// Don't care about it.
 		} else if (!strcasecmp(ext, ".jpg")) {
 			char testpath[strlen(rwpath)+strlen(rwname)+2];
 			if (DEBUG >= 3) printf("\tFound .jpg file.\n");
@@ -134,7 +179,8 @@ static int ddsfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 			strcpy(ext, ".dds");
 			sprintf(testpath, "%s/%s", rwpath, rwname);
 			if (stat(testpath, &st) == -1) {
-				filler(buf, rwname, &st, 0);
+				st2fst(&st, &fst);
+				filler(buf, rwname, &fst, 0);
 				if (DEBUG >= 3) printf("\t\tAdded .dds\n");
 			} else {
 				if (DEBUG >= 3) printf("\t\tSkipped .dds\n");
@@ -146,7 +192,8 @@ static int ddsfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 			strcpy(ext, ".dds");
 			sprintf(testpath, "%s/%s", rwpath, rwname);
 			if (stat(testpath, &st) == -1) {
-				filler(buf, rwname, &st, 0);
+				st2fst(&st, &fst);
+				filler(buf, rwname, &fst, 0);
 				if (DEBUG >= 3) printf("\t\tAdded .dds\n");
 			} else {
 				if (DEBUG >= 3) printf("\t\tSkipped .dds\n");
@@ -275,7 +322,12 @@ static int ddsfs_read(const char *path, char *buf, size_t size, off_t offset,
 		pthread_mutex_unlock(&cachelock);
 	}
 
+	#if __WIN32
+	lseek(fd, offset, SEEK_SET);
+	res = read(fd, buf, size);
+	#else
 	res = pread(fd, buf, size, offset);
+	#endif
 	if (res == -1) res = -errno;
 
 	if (fi == NULL) close(fd);
@@ -304,6 +356,7 @@ static int ddsfs_release(const char *path, struct fuse_file_info *fi)
 
 int main(int argc, char *argv[])
 {
+	printf("Begin\n");
 	umask(0);
 	config.cache = 1;
 	config.compress = 1;
