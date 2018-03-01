@@ -19,9 +19,9 @@ In addition to the standard FUSE options, DDSFS recognizes:
 | -o debug[=#]       | Writes status/debugging information. Values for # range from 1 to 3.
 
 #### Windows
-DDSFS can be used on Windows with the [Dokan](http://dokan-dev.github.io/) FUSE wrapper.  
+DDSFS can be used on Windows with the [Dokan](http://dokan-dev.github.io/) FUSE wrapper. A Cygwin binary is available from [Jenkins](http://jenkins.maeyanie.com/job/ddsfs/).  
 It has been developed and tested with [1.1.0.2000](https://github.com/dokan-dev/dokany/releases/tag/v1.1.0.2000) but may work with other versions.  
-Dokan can mount on either a path or a drive letter, and directory symbolic links can be used to redirect certain paths to DDSFS.
+Dokan can mount on either a path or a drive letter, and symbolic links can be used to redirect specific paths.
 
 #### Formats
 Currently supported formats:  
