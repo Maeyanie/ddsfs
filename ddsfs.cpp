@@ -35,28 +35,45 @@
 #include "ddsfs.h"
 using namespace std;
 
-struct CacheEntry {
+class CacheEntry {
+public:
+	string name;
 	unsigned char* data;
 	unsigned int len;
+	int refs;
+	
+	CacheEntry(const char* n, unsigned char* d, unsigned int l) {
+		name = n;
+		data = d;
+		len = l;
+		refs = 1;
+	}
+	~CacheEntry() {
+		if (refs > 1) fprintf(stderr, "Warning: Deleting memory-cached file with %d refs!\n", refs);
+		if (data) free(data);
+	}
 };
+
+
 
 struct Config config;
 #define DDSFS_OPT(t, p, v) { t, offsetof(struct Config, p), v }
 static struct fuse_opt ddsfs_opts[] = {
 	DDSFS_OPT("dxt1",			compress, 1),
-	DDSFS_OPT("rgb",				compress, 0),
+	DDSFS_OPT("rgb",			compress, 0),
 	DDSFS_OPT("cache",			cache, 1),
-	DDSFS_OPT("nocache",			cache, 0),
+	DDSFS_OPT("nocache",		cache, 0),
 	DDSFS_OPT("debug",			debug, 1),
 	DDSFS_OPT("debug=%i",		debug, 0),
-	DDSFS_OPT("--debug",			debug, 1),
+	DDSFS_OPT("--debug",		debug, 1),
 	DDSFS_OPT("--debug=%i",		debug, 0),
 	FUSE_OPT_END
 };
 
-static unordered_map<int,CacheEntry> memcache;
+static pthread_rwlock_t cachelock;
+static unordered_map<int,CacheEntry*> memcache;
+static unordered_map<string,CacheEntry*> memindex;
 static int nextfd = 100;
-static pthread_mutex_t cachelock = PTHREAD_MUTEX_INITIALIZER;
 
 static int ddsfs_opt_proc(void *data, const char *arg, int key, struct fuse_args *outargs) {
 	if (key == FUSE_OPT_KEY_NONOPT && config.basepath == NULL) {
@@ -100,13 +117,13 @@ static int ddsfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 {
 	DIR *dp;
 	struct dirent *de;
-	char rwpath[strlen(config.basepath)+strlen(path)+2];
+	char rwpath[strlen(config.basepath)+strlen(path)+1];
 	char* ext;
 
 	(void) offset;
 	(void) fi;
 	
-	sprintf(rwpath, "%s/%s", config.basepath, path);
+	sprintf(rwpath, "%s%s", config.basepath, path);
 	
 	if (DEBUG) printf("readdir: %s\n", rwpath);
 	dp = opendir(rwpath);
@@ -155,7 +172,7 @@ static int ddsfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	}
 
 	closedir(dp);
-	if (DEBUG) printf("readdir: Done.\n");
+	if (DEBUG >= 2) printf("readdir: Done.\n");
 	return 0;
 }
 
@@ -178,6 +195,25 @@ static int ddsfs_open(const char *path, struct fuse_file_info *fi)
 			char srcpath[strlen(rwpath)+2];
 			unsigned char* dds = NULL;
 			int len = 0;
+			
+			if (!config.cache) {
+				pthread_rwlock_rdlock(&cachelock);
+				auto i = memindex.find(rwpath);
+				if (i != memindex.end()) {
+					int fd;
+					do {
+						fd = nextfd++;
+						if (nextfd > 1000000) nextfd = 100;
+					} while (memcache.find(fd) != memcache.end());
+					if (DEBUG) printf("nocache: Using FD %d for existing reference.\n", fd);
+					memcache[fd] = i->second;
+					i->second->refs++;
+					pthread_rwlock_unlock(&cachelock);
+					fi->fh = fd;
+					return fd;
+				}
+				pthread_rwlock_unlock(&cachelock);
+			}
 			
 			// Try to decode a .jpg alternate
 			strcpy(srcpath, rwpath);
@@ -224,16 +260,27 @@ static int ddsfs_open(const char *path, struct fuse_file_info *fi)
 				fi->fh = res;
 				return res;
 			} else {
-				pthread_mutex_lock(&cachelock);
+				pthread_rwlock_wrlock(&cachelock);
 				int fd;
 				do {
 					fd = nextfd++;
 					if (nextfd > 1000000) nextfd = 100;
 				} while (memcache.find(fd) != memcache.end());
-				if (DEBUG >= 2) printf("nocache: Using FD %d for %d bytes.\n", fd, len);
-				memcache[fd] = {dds, (unsigned int)len};
-				pthread_mutex_unlock(&cachelock);
 				fi->fh = fd;
+
+				auto i = memindex.find(rwpath);
+				if (i != memindex.end()) {
+					if (DEBUG) printf("nocache: Recheck found FD %d for existing reference.\n", fd);
+					memcache[fd] = i->second;
+					i->second->refs++;
+					free(dds);
+				} else {				
+					if (DEBUG >= 2) printf("nocache: Using FD %d for %d bytes.\n", fd, len);
+					CacheEntry* ce = new CacheEntry(rwpath, dds, len);
+					memcache[fd] = ce;
+					memindex[rwpath] = ce;
+				}
+				pthread_rwlock_unlock(&cachelock);
 				return fd;
 			}
 		} else {
@@ -252,27 +299,27 @@ static int ddsfs_read(const char *path, char *buf, size_t size, off_t offset,
 	int res;
 
 	if (fi == NULL) {
-		char rwpath[strlen(config.basepath)+strlen(path)+2];
-		sprintf(rwpath, "%s/%s", config.basepath, path);
+		char rwpath[strlen(config.basepath)+strlen(path)+1];
+		sprintf(rwpath, "%s%s", config.basepath, path);
 		fd = open(path, O_RDONLY);
 	} else fd = fi->fh;
 	if (fd == -1) return -errno;
 	
 	if (!config.cache) {
-		pthread_mutex_lock(&cachelock);
+		pthread_rwlock_rdlock(&cachelock);
 		if (DEBUG >= 2) printf("read: Uncached mode, looking for FD %d.\n", fd);
 		auto i = memcache.find(fd);
 		if (i != memcache.end()) {
 			if (DEBUG >= 2) printf("read: %lu bytes at %ld from memory for FD %d.\n", size, offset, i->first);
-			if (size+offset > i->second.len) {
-				size = (i->second.len)-offset;
+			if (size+offset > i->second->len) {
+				size = (i->second->len)-offset;
 				if (DEBUG) printf("read: Read would have exceeded length, reducing to %lu.\n", size);
 			}
-			memcpy(buf, (i->second.data)+offset, size);
-			pthread_mutex_unlock(&cachelock);
+			memcpy(buf, (i->second->data)+offset, size);
+			pthread_rwlock_unlock(&cachelock);
 			return size;
 		}
-		pthread_mutex_unlock(&cachelock);
+		pthread_rwlock_unlock(&cachelock);
 	}
 
 	res = pread(fd, buf, size, offset);
@@ -288,16 +335,22 @@ static int ddsfs_release(const char *path, struct fuse_file_info *fi)
 	if (DEBUG >= 2) printf("release: %s\n", path);
 	if (fi == NULL || fi->fh == 0) return 0;
 	if (!config.cache) {
-		pthread_mutex_lock(&cachelock);
+		pthread_rwlock_wrlock(&cachelock);
 		auto i = memcache.find(fi->fh);
 		if (i != memcache.end()) {
-			if (DEBUG >= 2) printf("release: Freeing %d bytes of memory for FD %d.\n", i->second.len, i->first);
-			free(i->second.data);
+			if (i->second->refs <= 1) {
+				if (DEBUG) printf("release: Freeing %d bytes of memory for FD %d.\n", i->second->len, i->first);
+				memindex.erase(i->second->name);
+				delete i->second;
+			} else {
+				if (DEBUG) printf("release: FD %d has %d refs, not freeing.\n", i->first, i->second->refs);
+				i->second->refs--;
+			}
 			memcache.erase(i);
-			pthread_mutex_unlock(&cachelock);
+			pthread_rwlock_unlock(&cachelock);
 			return 0;
 		}
-		pthread_mutex_unlock(&cachelock);
+		pthread_rwlock_unlock(&cachelock);
 	}
 	return close(fi->fh);
 }
@@ -307,6 +360,8 @@ int main(int argc, char *argv[])
 	umask(0);
 	config.cache = 1;
 	config.compress = 1;
+	
+	pthread_rwlock_init(&cachelock, NULL);
 
 	struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
 	fuse_opt_parse(&args, &config, ddsfs_opts, ddsfs_opt_proc);

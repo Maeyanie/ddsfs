@@ -54,7 +54,7 @@ int ddsfs_webp_dxt1(char* src, unsigned char** dst) {
 	struct timeb start, mid, end;
 	
 	if (DEBUG) {
-		printf("DXT: Doing intenal conversion with WebPDecoder.\n");
+		printf("DXT: Doing internal conversion with WebPDecoder.\n");
 		ftime(&start);
 	}
 	

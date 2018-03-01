@@ -54,7 +54,7 @@ int ddsfs_jpg_dxt1(char* src, unsigned char** dst) {
 	struct timeb start, mid, end;
 	
 	if (DEBUG) {
-		printf("DXT1: Doing intenal conversion with turbojpeg.\n");
+		printf("DXT1: Doing internal conversion with turbojpeg.\n");
 		ftime(&start);
 	}
 	
