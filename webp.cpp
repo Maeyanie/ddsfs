@@ -149,7 +149,6 @@ int ddsfs_webp_dxt1(char* src, unsigned char** dst) {
 	memcpy(dstpos, &header, sizeof(header));
 	dstpos += sizeof(header);
 
-	unsigned char* dds = (unsigned char*)memalign(16, width*height*4);
 	int bytes;
 	if (wpbf.has_alpha) {
 		CompressImageDXT5(rgba, dstpos, width, height, bytes);
@@ -293,7 +292,6 @@ int ddsfs_webp_rgb(char* src, unsigned char** dst) {
 		int curmip = 0;
 		while (width > 8 && height > 8) {
 			if (DEBUG >= 2) printf("RGB: Resample mip %d (%d x %d)\n", ++curmip, width, height);
-			unsigned char* nextmip = (unsigned char*)memalign(16, width * height * 4);
 			halveimage(dstpos-bytes, width, height, dstpos);
 			width >>= 1;
 			height >>= 1;

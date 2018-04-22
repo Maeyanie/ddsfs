@@ -112,20 +112,34 @@ static int ddsfs_getattr(const char *path, struct stat *stbuf)
 	return 0;
 }
 
+static int ddsfs_access(const char *path, int mask)
+{
+	int res;
+
+	res = access(path, mask);
+	if (res == -1)
+		return -errno;
+
+	return 0;
+}
+
 static int ddsfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		       off_t offset, struct fuse_file_info *fi)
 {
 	DIR *dp;
 	struct dirent *de;
 	char rwpath[strlen(config.basepath)+strlen(path)+1];
+	char* rwname = (char*)malloc(1024);
+	unsigned int rwnamelen = 1024;
+	char* testpath = (char*)malloc(1024);
+	unsigned int testpathlen = 1024;
 	char* ext;
 
-	(void) offset;
 	(void) fi;
 	
 	sprintf(rwpath, "%s%s", config.basepath, path);
 	
-	if (DEBUG) printf("readdir: %s\n", rwpath);
+	if (DEBUG) printf("readdir: path=%s offset=%d\n", rwpath, offset);
 	dp = opendir(rwpath);
 	if (dp == NULL) return -errno;
 
@@ -139,13 +153,20 @@ static int ddsfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		if (filler(buf, de->d_name, &st, 0))
 			break;
 		
-		char* rwname = strdupa(de->d_name);
+		if (strlen(de->d_name) >= rwnamelen) {
+			rwnamelen = strlen(de->d_name)+1;
+			rwname = (char*)realloc(rwname, rwnamelen);
+		}
+		strcpy(rwname, de->d_name);
 		ext = strrchr(rwname, '.');
 		if (DEBUG >= 3) printf("\t\tpath='%s' ext='%s'\n", rwname, ext);
 		if (!ext) {
 			// Meh.
 		} else if (!strcasecmp(ext, ".jpg")) {
-			char testpath[strlen(rwpath)+strlen(rwname)+2];
+			if (strlen(rwpath)+strlen(rwname)+1 >= testpathlen) {
+				testpathlen = strlen(rwpath)+strlen(rwname)+2;
+				testpath = (char*)realloc(testpath, testpathlen);
+			}
 			if (DEBUG >= 3) printf("\tFound .jpg file.\n");
 
 			strcpy(ext, ".dds");
@@ -157,7 +178,10 @@ static int ddsfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 				if (DEBUG >= 3) printf("\t\tSkipped .dds\n");
 			}
 		} else if (!strcasecmp(ext, ".webp")) {
-			char testpath[strlen(rwpath)+strlen(rwname)+2];
+			if (strlen(rwpath)+strlen(rwname)+1 >= testpathlen) {
+				testpathlen = strlen(rwpath)+strlen(rwname)+2;
+				testpath = (char*)realloc(testpath, testpathlen);
+			}
 			if (DEBUG >= 3) printf("\tFound .webp file.\n");
 
 			strcpy(ext, ".dds");
@@ -172,6 +196,8 @@ static int ddsfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	}
 
 	closedir(dp);
+	free(rwname);
+	free(testpath);
 	if (DEBUG >= 2) printf("readdir: Done.\n");
 	return 0;
 }
@@ -252,6 +278,7 @@ static int ddsfs_open(const char *path, struct fuse_file_info *fi)
 				}
 				len = write(fd, dds, len);
 				close(fd);
+				free(dds);
 				if (DEBUG >= 2) printf("cache: Wrote %d bytes.\n", len);
 				
 				res = open(rwpath, fi->flags);
@@ -302,6 +329,7 @@ static int ddsfs_read(const char *path, char *buf, size_t size, off_t offset,
 		char rwpath[strlen(config.basepath)+strlen(path)+1];
 		sprintf(rwpath, "%s%s", config.basepath, path);
 		fd = open(path, O_RDONLY);
+		if (DEBUG) printf("read: Called with no info for file '%s'\n", path);
 	} else fd = fi->fh;
 	if (fd == -1) return -errno;
 	
@@ -369,6 +397,7 @@ int main(int argc, char *argv[])
 	struct fuse_operations oper;
 	memset(&oper, 0, sizeof(oper));
 	oper.getattr = ddsfs_getattr;
+	oper.access = ddsfs_access;
 	oper.readdir = ddsfs_readdir;
 	oper.open = ddsfs_open;
 	oper.read = ddsfs_read;

@@ -121,7 +121,7 @@ int ddsfs_jpg_dxt1(char* src, unsigned char** dst) {
 		mips++;
 	}
 	mips++;
-	if (DEBUG) printf("DXT1: Allocating %d bytes for %d mip%s.\n", totalsize, mips, mips==1?"":"s");
+	if (DEBUG) printf("DXT1: Allocating %d bytes for %d mip%s from %dx%d.\n", totalsize, mips, mips==1?"":"s", width, height);
 	header.dwFlags |= 0x20000;
 	header.dwMipMapCount = mips;
 	header.dwCaps |= 0x8 | 0x400000;
@@ -139,7 +139,6 @@ int ddsfs_jpg_dxt1(char* src, unsigned char** dst) {
 	memcpy(dstpos, &header, sizeof(header));
 	dstpos += sizeof(header);
 
-	unsigned char* dds = (unsigned char*)memalign(16, width*height*4);
 	int bytes;
 	CompressImageDXT1(rgba, dstpos, width, height, bytes);
 	dstpos += bytes;
@@ -273,7 +272,6 @@ int ddsfs_jpg_rgb(char* src, unsigned char** dst) {
 		int curmip = 0;
 		while (width > 8 && height > 8) {
 			if (DEBUG >= 2) printf("RGB: Resample mip %d (%d x %d)\n", ++curmip, width, height);
-			unsigned char* nextmip = (unsigned char*)memalign(16, width * height * 4);
 			halveimage(dstpos-bytes, width, height, dstpos);
 			width >>= 1;
 			height >>= 1;
