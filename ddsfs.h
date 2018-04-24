@@ -7,7 +7,7 @@
 
 extern struct Config {
 	char* basepath;
-	int cache;
+	unsigned int cache;
 	int compress;
 	int debug;
 } config;

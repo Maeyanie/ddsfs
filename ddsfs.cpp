@@ -31,7 +31,9 @@
 #include <pthread.h>
 #include <fuse.h>
 #include <atomic>
+#include <algorithm>
 #include <unordered_map>
+#include <list>
 #include "ddsfs.h"
 using namespace std;
 
@@ -56,32 +58,72 @@ public:
 
 
 
+struct fuse_operations oper;
 struct Config config;
+
+enum {
+	KEY_HELP,
+};
+enum {
+	CACHE_NONE,
+	CACHE_DISK,
+	CACHE_MEM,
+};
+
 #define DDSFS_OPT(t, p, v) { t, offsetof(struct Config, p), v }
 static struct fuse_opt ddsfs_opts[] = {
 	DDSFS_OPT("dxt1",			compress, 1),
+	DDSFS_OPT("dxt",			compress, 1),
 	DDSFS_OPT("rgb",			compress, 0),
 	DDSFS_OPT("cache",			cache, 1),
+	DDSFS_OPT("cache=%i",		cache, 0),
 	DDSFS_OPT("nocache",		cache, 0),
-	DDSFS_OPT("debug",			debug, 1),
-	DDSFS_OPT("debug=%i",		debug, 0),
-	DDSFS_OPT("--debug",		debug, 1),
-	DDSFS_OPT("--debug=%i",		debug, 0),
+	DDSFS_OPT("verbose",		debug, 1),
+	DDSFS_OPT("verbose=%i",		debug, 0),
+	DDSFS_OPT("--verbose",		debug, 1),
+	DDSFS_OPT("--verbose=%i",	debug, 0),
+	
+	FUSE_OPT_KEY("-h",			KEY_HELP),
+	FUSE_OPT_KEY("--help",		KEY_HELP),
 	FUSE_OPT_END
 };
 
-static pthread_rwlock_t cachelock;
+static pthread_mutex_t cachelock;
 static unordered_map<int,CacheEntry*> memcache;
 static unordered_map<string,CacheEntry*> memindex;
+static list<string> memlru;
 static int nextfd = 100;
 
-static int ddsfs_opt_proc(void *data, const char *arg, int key, struct fuse_args *outargs) {
-	if (key == FUSE_OPT_KEY_NONOPT && config.basepath == NULL) {
-		config.basepath = strdup(arg);
-		return 0;
-	}
-	return 1;
+static int ddsfs_opt_proc(void *data, const char *arg, int key, struct fuse_args *outargs)
+{
+     switch (key) {
+     case KEY_HELP:
+		fprintf(stderr,
+			"usage: %s <scenery> <mount> [options]\n"
+			"\n"
+			"general options:\n"
+			"    -o opt,[opt...]        mount options\n"
+			"    -h   --help            print help\n"
+			"\n"
+			"DDSFS options:\n"
+			"    -o dxt                 Convert to DXT1/DXT5 textures\n"
+			"    -o rgb                 Convert to RGB/RGBA textures\n"
+			"    -o cache[=#]           Set type of caching. 0=none, 1=disk (default), otherwise memory cache of # entries\n"
+			"    -o nocache             Equivalent to -o cache=0\n"
+			"    -o verbose[=#]         Set level of information on DDSFS's operations\n"
+			"\n", outargs->argv[0]);
+		fuse_opt_add_arg(outargs, "-ho");
+		fuse_main(outargs->argc, outargs->argv, &oper, NULL);
+		exit(1);
+	 case FUSE_OPT_KEY_NONOPT:
+		if (config.basepath == NULL) {
+			config.basepath = strdup(arg);
+			return 0;
+		}
+     }
+     return 1;
 }
+
 
 static int ddsfs_getattr(const char *path, struct stat *stbuf)
 {
@@ -139,7 +181,7 @@ static int ddsfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	
 	sprintf(rwpath, "%s%s", config.basepath, path);
 	
-	if (DEBUG) printf("readdir: path=%s offset=%d\n", rwpath, offset);
+	if (DEBUG) printf("readdir: path=%s offset=%ld\n", rwpath, offset);
 	dp = opendir(rwpath);
 	if (dp == NULL) return -errno;
 
@@ -202,6 +244,25 @@ static int ddsfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	return 0;
 }
 
+static void tidycache()
+{
+	list<string>::iterator i;
+	CacheEntry* j;
+	
+	while (memlru.size() > config.cache) {
+		i = memlru.begin();
+		do {
+			if (i == memlru.end()) return;
+			j = memindex[*i];
+			i++;
+		} while (j->refs >= 1);
+
+		memindex.erase(j->name);
+		delete j;
+		memlru.erase(i);
+	}
+}
+
 static int ddsfs_open(const char *path, struct fuse_file_info *fi)
 {
 	int res;
@@ -222,8 +283,8 @@ static int ddsfs_open(const char *path, struct fuse_file_info *fi)
 			unsigned char* dds = NULL;
 			int len = 0;
 			
-			if (!config.cache) {
-				pthread_rwlock_rdlock(&cachelock);
+			if (config.cache != CACHE_DISK) {
+				pthread_mutex_lock(&cachelock);
 				auto i = memindex.find(rwpath);
 				if (i != memindex.end()) {
 					int fd;
@@ -234,11 +295,19 @@ static int ddsfs_open(const char *path, struct fuse_file_info *fi)
 					if (DEBUG) printf("nocache: Using FD %d for existing reference.\n", fd);
 					memcache[fd] = i->second;
 					i->second->refs++;
-					pthread_rwlock_unlock(&cachelock);
+					for (auto j = memlru.begin(); j != memlru.end(); j++) {
+						if (*j == rwpath) {
+							memlru.erase(j);
+							break;
+						}
+					}
+					memlru.push_back(rwpath);
+					if (config.cache >= CACHE_MEM) tidycache();
+					pthread_mutex_unlock(&cachelock);
 					fi->fh = fd;
 					return fd;
 				}
-				pthread_rwlock_unlock(&cachelock);
+				pthread_mutex_unlock(&cachelock);
 			}
 			
 			// Try to decode a .jpg alternate
@@ -268,7 +337,7 @@ static int ddsfs_open(const char *path, struct fuse_file_info *fi)
 			// Failed to decode another file, bail out.
 			if (!dds) return -ENOENT;
 			
-			if (config.cache) {
+			if (config.cache == CACHE_DISK) {
 				if (DEBUG >= 2) printf("cache: Writing %d bytes to '%s'\n", len, rwpath);
 				int fd = open(rwpath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
 				if (fd == -1) {
@@ -287,7 +356,7 @@ static int ddsfs_open(const char *path, struct fuse_file_info *fi)
 				fi->fh = res;
 				return res;
 			} else {
-				pthread_rwlock_wrlock(&cachelock);
+				pthread_mutex_lock(&cachelock);
 				int fd;
 				do {
 					fd = nextfd++;
@@ -297,17 +366,17 @@ static int ddsfs_open(const char *path, struct fuse_file_info *fi)
 
 				auto i = memindex.find(rwpath);
 				if (i != memindex.end()) {
-					if (DEBUG) printf("nocache: Recheck found FD %d for existing reference.\n", fd);
+					if (DEBUG) printf("memcache: Recheck found FD %d for existing reference.\n", fd);
 					memcache[fd] = i->second;
 					i->second->refs++;
 					free(dds);
 				} else {				
-					if (DEBUG >= 2) printf("nocache: Using FD %d for %d bytes.\n", fd, len);
+					if (DEBUG >= 2) printf("memcache: Using FD %d for %d bytes.\n", fd, len);
 					CacheEntry* ce = new CacheEntry(rwpath, dds, len);
 					memcache[fd] = ce;
 					memindex[rwpath] = ce;
 				}
-				pthread_rwlock_unlock(&cachelock);
+				pthread_mutex_unlock(&cachelock);
 				return fd;
 			}
 		} else {
@@ -334,7 +403,7 @@ static int ddsfs_read(const char *path, char *buf, size_t size, off_t offset,
 	if (fd == -1) return -errno;
 	
 	if (!config.cache) {
-		pthread_rwlock_rdlock(&cachelock);
+		pthread_mutex_lock(&cachelock);
 		if (DEBUG >= 2) printf("read: Uncached mode, looking for FD %d.\n", fd);
 		auto i = memcache.find(fd);
 		if (i != memcache.end()) {
@@ -344,10 +413,10 @@ static int ddsfs_read(const char *path, char *buf, size_t size, off_t offset,
 				if (DEBUG) printf("read: Read would have exceeded length, reducing to %lu.\n", size);
 			}
 			memcpy(buf, (i->second->data)+offset, size);
-			pthread_rwlock_unlock(&cachelock);
+			pthread_mutex_unlock(&cachelock);
 			return size;
 		}
-		pthread_rwlock_unlock(&cachelock);
+		pthread_mutex_unlock(&cachelock);
 	}
 
 	res = pread(fd, buf, size, offset);
@@ -362,11 +431,11 @@ static int ddsfs_release(const char *path, struct fuse_file_info *fi)
 {
 	if (DEBUG >= 2) printf("release: %s\n", path);
 	if (fi == NULL || fi->fh == 0) return 0;
-	if (!config.cache) {
-		pthread_rwlock_wrlock(&cachelock);
+	if (config.cache != CACHE_DISK) {
+		pthread_mutex_lock(&cachelock);
 		auto i = memcache.find(fi->fh);
 		if (i != memcache.end()) {
-			if (i->second->refs <= 1) {
+			if (config.cache == CACHE_NONE && i->second->refs <= 1) {
 				if (DEBUG) printf("release: Freeing %d bytes of memory for FD %d.\n", i->second->len, i->first);
 				memindex.erase(i->second->name);
 				delete i->second;
@@ -375,10 +444,10 @@ static int ddsfs_release(const char *path, struct fuse_file_info *fi)
 				i->second->refs--;
 			}
 			memcache.erase(i);
-			pthread_rwlock_unlock(&cachelock);
+			pthread_mutex_unlock(&cachelock);
 			return 0;
 		}
-		pthread_rwlock_unlock(&cachelock);
+		pthread_mutex_unlock(&cachelock);
 	}
 	return close(fi->fh);
 }
@@ -389,12 +458,8 @@ int main(int argc, char *argv[])
 	config.cache = 1;
 	config.compress = 1;
 	
-	pthread_rwlock_init(&cachelock, NULL);
+	pthread_mutex_init(&cachelock, NULL);
 
-	struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
-	fuse_opt_parse(&args, &config, ddsfs_opts, ddsfs_opt_proc);
-
-	struct fuse_operations oper;
 	memset(&oper, 0, sizeof(oper));
 	oper.getattr = ddsfs_getattr;
 	oper.access = ddsfs_access;
@@ -402,13 +467,16 @@ int main(int argc, char *argv[])
 	oper.open = ddsfs_open;
 	oper.read = ddsfs_read;
 	oper.release = ddsfs_release;
+
+	struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
+	fuse_opt_parse(&args, &config, ddsfs_opts, ddsfs_opt_proc);
 	
 	if (config.basepath == NULL) {
 		fprintf(stderr, "Usage: %s <scenery> <mount>\n", args.argv[0]);
 		return 1;
 	}
 	
-	printf("Starting: basepath=%s cache=%d format=%s\n", config.basepath, config.cache, config.compress?"DXT1":"RGB");
+	printf("Starting: basepath=%s cache=%d format=%s\n", config.basepath, config.cache, config.compress?"DXT":"RGB");
 	int ret = fuse_main(args.argc, args.argv, &oper, NULL);
 	printf("Exiting.\n");
 	
