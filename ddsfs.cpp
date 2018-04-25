@@ -37,6 +37,8 @@
 #include "ddsfs.h"
 using namespace std;
 
+
+
 class CacheEntry {
 public:
 	string name;
@@ -57,10 +59,8 @@ public:
 };
 
 
-
 struct fuse_operations oper;
 struct Config config;
-
 enum {
 	KEY_HELP,
 };
@@ -78,6 +78,8 @@ static struct fuse_opt ddsfs_opts[] = {
 	DDSFS_OPT("cache",			cache, 1),
 	DDSFS_OPT("cache=%i",		cache, 0),
 	DDSFS_OPT("nocache",		cache, 0),
+	DDSFS_OPT("size",			size, 1),
+	DDSFS_OPT("nosize",			size, 0),
 	DDSFS_OPT("verbose",		debug, 1),
 	DDSFS_OPT("verbose=%i",		debug, 0),
 	DDSFS_OPT("--verbose",		debug, 1),
@@ -93,6 +95,19 @@ static unordered_map<int,CacheEntry*> memcache;
 static unordered_map<string,CacheEntry*> memindex;
 static list<string> memlru;
 static int nextfd = 100;
+
+static inline int dds_size(int width, int height) {
+	int pixels = 0;
+	int mips = 0;
+	// This really seems like it could be done with a single formula.
+	while ((height >> mips) > 8 && (width >> mips) > 8) {
+		pixels += (height >> mips) * (width >> mips);
+		mips++;
+	}
+	if (config.compress) return sizeof(DDS_HEADER) + (pixels/2);
+	else return sizeof(DDS_HEADER) + (pixels*4);
+}
+
 
 static int ddsfs_opt_proc(void *data, const char *arg, int key, struct fuse_args *outargs)
 {
@@ -110,6 +125,8 @@ static int ddsfs_opt_proc(void *data, const char *arg, int key, struct fuse_args
 			"    -o rgb                 Convert to RGB/RGBA\n"
 			"    -o cache=0             Cache DDS files in memory only as long as they are open\n"
 			"    -o cache=1             Save DDS files on disk until manually removed (default)\n"
+			"    -o size                Calculate sizes for fake DDS files. Slow, but some programs need it\n"
+			"    -o nosize              Give fake DDS file sizes as the source file size (default)\n"
 			"    -o cache=#             Cache up to # DDS files in memory, removed on a least-recently-used basis\n"
 			"    -o nocache             Equivalent to -o cache=0\n"
 			"    -o verbose[=#]         Set level of information on DDSFS's operations\n"
@@ -134,7 +151,7 @@ static int ddsfs_getattr(const char *path, struct stat *stbuf)
 	char* ext;
 
 	sprintf(rwpath, "%s/%s", config.basepath, path);
-	if (DEBUG >= 2) printf("getattr: %s\n", rwpath);
+	if (DEBUG >= 3) printf("getattr: %s\n", rwpath);
 
 	res = lstat(rwpath, stbuf);
 	if (res == -1) {
@@ -143,7 +160,14 @@ static int ddsfs_getattr(const char *path, struct stat *stbuf)
 		if (!strcasecmp(ext, ".dds")) {
 			strcpy(ext, ".jpg");
 			res = lstat(rwpath, stbuf);
-			if (res == 0) return 0;
+			if (res == 0) {
+				int width, height;
+				res = ddsfs_jpg_header(rwpath, &width, &height);
+				if (res != 0) return -errno;
+				
+				stbuf->st_size = dds_size(width, height);
+				return 0;
+			}
 			
 			strcpy(ext, ".webp");
 			res = lstat(rwpath, stbuf);
@@ -256,13 +280,14 @@ static void tidycache()
 		do {
 			if (i == memlru.end()) return;
 			j = memindex[*i];
+			if (j->refs == 0) break;
 			i++;
-		} while (j->refs >= 1);
+		} while (1);
 
 		printf("memcache: Removed %s from cache.\n", j->name.c_str());
 		memindex.erase(j->name);
-		delete j;
 		memlru.erase(i);
+		delete j;
 	}
 }
 static void refresh(const string& name) {
@@ -341,7 +366,7 @@ static int ddsfs_open(const char *path, struct fuse_file_info *fi)
 			
 			// Failed to decode another file, bail out.
 			if (!dds) return -ENOENT;
-			
+						
 			if (config.cache == CACHE_DISK) {
 				if (DEBUG >= 2) printf("cache: Writing %d bytes to '%s'\n", len, rwpath);
 				int fd = open(rwpath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -376,7 +401,7 @@ static int ddsfs_open(const char *path, struct fuse_file_info *fi)
 					i->second->refs++;
 					free(dds);
 					refresh(rwpath);
-				} else {				
+				} else {
 					if (DEBUG) printf("memcache: Using FD %d for %d bytes.\n", fd, len);
 					CacheEntry* ce = new CacheEntry(rwpath, dds, len);
 					memcache[fd] = ce;
@@ -465,6 +490,7 @@ int main(int argc, char *argv[])
 	umask(0);
 	config.cache = 1;
 	config.compress = 1;
+	config.size = 1;
 	
 	pthread_rwlock_init(&cachelock, NULL);
 

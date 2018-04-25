@@ -20,34 +20,6 @@
 #include <libdxt.h>
 #include "ddsfs.h"
 
-struct DDS_PIXELFORMAT {
-	unsigned int dwSize;
-	unsigned int dwFlags;
-	unsigned int dwFourCC;
-	unsigned int dwRGBBitCount;
-	unsigned int dwRBitMask;
-	unsigned int dwGBitMask;
-	unsigned int dwBBitMask;
-	unsigned int dwABitMask;
-};
-struct DDS_HEADER {
-	unsigned int dwMagic;
-	unsigned int dwSize;
-	unsigned int dwFlags;
-	unsigned int dwHeight;
-	unsigned int dwWidth;
-	unsigned int dwPitchOrLinearSize;
-	unsigned int dwDepth;
-	unsigned int dwMipMapCount;
-	unsigned int dwReserved1[11];
-	DDS_PIXELFORMAT ddspf;
-	unsigned int dwCaps;
-	unsigned int dwCaps2;
-	unsigned int dwCaps3;
-	unsigned int dwCaps4;
-	unsigned int dwReserved2;
-};
-
 
 
 int ddsfs_webp_dxt1(char* src, unsigned char** dst) {

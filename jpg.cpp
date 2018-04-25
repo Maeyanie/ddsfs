@@ -20,35 +20,31 @@
 #include <libdxt.h>
 #include "ddsfs.h"
 
-struct DDS_PIXELFORMAT {
-	unsigned int dwSize;
-	unsigned int dwFlags;
-	unsigned int dwFourCC;
-	unsigned int dwRGBBitCount;
-	unsigned int dwRBitMask;
-	unsigned int dwGBitMask;
-	unsigned int dwBBitMask;
-	unsigned int dwABitMask;
-};
-struct DDS_HEADER {
-	unsigned int dwMagic;
-	unsigned int dwSize;
-	unsigned int dwFlags;
-	unsigned int dwHeight;
-	unsigned int dwWidth;
-	unsigned int dwPitchOrLinearSize;
-	unsigned int dwDepth;
-	unsigned int dwMipMapCount;
-	unsigned int dwReserved1[11];
-	DDS_PIXELFORMAT ddspf;
-	unsigned int dwCaps;
-	unsigned int dwCaps2;
-	unsigned int dwCaps3;
-	unsigned int dwCaps4;
-	unsigned int dwReserved2;
-};
 
 
+int ddsfs_jpg_header(char* src, int* width, int* height) {
+	int fd = open(src, O_RDONLY);
+	if (fd == -1) {
+		fprintf(stderr, "JPG: Could not open '%s' for read.\n", src);
+		return -1;
+	}
+	size_t size = lseek(fd, 0, SEEK_END);
+	unsigned char* jpeg = (unsigned char*)memalign(16, size);
+	lseek(fd, 0, SEEK_SET);
+	size = read(fd, jpeg, size);
+	close(fd);
+	
+	tjhandle tj = tjInitDecompress();
+	int subsamp, colourspace;
+	int ret = tjDecompressHeader3(tj, jpeg, size, width, height, &subsamp, &colourspace);
+	free(jpeg);
+	tjDestroy(tj);
+	if (ret == -1) {
+		fprintf(stderr, "JPG: Could not decode header for '%s': %s\n", src, tjGetErrorStr());
+		return -1;
+	}
+	return 0;
+}
 
 int ddsfs_jpg_dxt1(char* src, unsigned char** dst) {
 	struct timeb start, mid, end;
