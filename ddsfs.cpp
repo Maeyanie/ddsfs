@@ -158,14 +158,27 @@ static int ddsfs_getattr(const char *path, struct stat *stbuf)
 		ext = strrchr(rwpath, '.');
 		if (!ext) return -errno;
 		if (!strcasecmp(ext, ".dds")) {
+			if (config.cache != CACHE_DISK) {
+				pthread_rwlock_rdlock(&cachelock);
+				auto i = memindex.find(rwpath);
+				if (i != memindex.end()) {
+					stbuf->st_size = i->second->len;
+					pthread_rwlock_unlock(&cachelock);
+					return 0;
+				}
+				pthread_rwlock_unlock(&cachelock);
+			}
+		
 			strcpy(ext, ".jpg");
 			res = lstat(rwpath, stbuf);
 			if (res == 0) {
-				int width, height;
-				res = ddsfs_jpg_header(rwpath, &width, &height);
-				if (res != 0) return -errno;
-				
-				stbuf->st_size = dds_size(width, height);
+				if (config.size) {
+					int width, height;
+					res = ddsfs_jpg_header(rwpath, &width, &height);
+					if (res != 0) return -errno;
+					
+					stbuf->st_size = dds_size(width, height);
+				}
 				return 0;
 			}
 			

@@ -22,7 +22,7 @@
 
 
 
-int ddsfs_jpg_header(char* src, int* width, int* height) {
+int ddsfs_jpg_header(const char* src, int* width, int* height) {
 	int fd = open(src, O_RDONLY);
 	if (fd == -1) {
 		fprintf(stderr, "JPG: Could not open '%s' for read.\n", src);

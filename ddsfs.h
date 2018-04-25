@@ -49,10 +49,11 @@ extern inline int poweroftwo(unsigned int x) {
 
 void halveimage(const unsigned char* src, int width, int height, unsigned char* dst);
 
-int ddsfs_jpg_header(char* src, int* width, int* height);
+int ddsfs_jpg_header(const char* src, int* width, int* height);
 int ddsfs_jpg_dxt1(char* src, unsigned char** dst);
 int ddsfs_jpg_rgb(char* src, unsigned char** dst);
 
+int ddsfs_webp_header(const char* src, int* width, int* height);
 int ddsfs_webp_dxt1(char* src, unsigned char** dst);
 int ddsfs_webp_rgb(char* src, unsigned char** dst);
 

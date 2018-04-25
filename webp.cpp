@@ -22,6 +22,32 @@
 
 
 
+int ddsfs_webp_header(const char* src, int* width, int* height) {
+	int fd = open(src, O_RDONLY);
+	if (fd == -1) {
+		fprintf(stderr, "WebP: Could not open '%s' for read.\n", src);
+		return -1;
+	}
+	
+	size_t size = lseek(fd, 0, SEEK_END);
+	unsigned char* webp = (unsigned char*)memalign(16, size);
+	lseek(fd, 0, SEEK_SET);
+	size = read(fd, webp, size);
+	close(fd);
+
+	WebPBitstreamFeatures wpbf;
+	VP8StatusCode rc = WebPGetFeatures(webp, size, &wpbf);
+	free(webp);
+	if (rc != VP8_STATUS_OK) {
+		fprintf(stderr, "WebP: Could not decode header for '%s': %d\n", src, rc);
+		return -1;
+	}
+
+	*width = wpbf.width;
+	*height = wpbf.height;
+	return 0;
+}
+
 int ddsfs_webp_dxt1(char* src, unsigned char** dst) {
 	struct timeb start, mid, end;
 	
