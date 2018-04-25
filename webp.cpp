@@ -87,17 +87,16 @@ int ddsfs_webp_dxt1(char* src, unsigned char** dst) {
 	int mips = 0;
 	int totalsize = sizeof(header);
 	if (wpbf.has_alpha) {
-		while ((height >> mips) > 8 && (width >> mips) > 8) {
+		while ((height >> mips) >= MINSIZE && (width >> mips) >= MINSIZE) {
 			totalsize += (height >> mips) * (width >> mips);
 			mips++;
 		}
 	} else {
-		while ((height >> mips) > 8 && (width >> mips) > 8) {
+		while ((height >> mips) >= MINSIZE && (width >> mips) >= MINSIZE) {
 			totalsize += (height >> mips) * (width >> mips) / 2;
 			mips++;
 		}
 	}
-	mips++;
 	
 	if (DEBUG) printf("DXT: Allocating %d bytes for %d mip%s.\n", totalsize, mips, mips==1?"":"s");
 	header.dwFlags |= 0x20000;
@@ -131,7 +130,7 @@ int ddsfs_webp_dxt1(char* src, unsigned char** dst) {
 
 	int curmip = 0;
 	if (mips > 0) {
-		while (width > 8 && height > 8) {
+		while (width > MINSIZE && height > MINSIZE) {
 			if (DEBUG >= 2) printf("DXT: Resample mip %d (%d x %d)\n", ++curmip, width, height);
 			unsigned char* nextmip = (unsigned char*)memalign(16, width * height * 4);
 			halveimage(rgba, width, height, nextmip);
@@ -152,7 +151,8 @@ int ddsfs_webp_dxt1(char* src, unsigned char** dst) {
 	}
 	free(rgba);
 	
-	
+	if (dstpos != *dst + totalsize) printf("Warning: Calculated size %d different from actual end offset %d!\n", totalsize, (int)(dstpos-*dst));
+
 	if (DEBUG) {
 		ftime(&end);
 		int diff = (1000.0 * (end.time - mid.time) + (end.millitm - mid.millitm));
@@ -209,11 +209,10 @@ int ddsfs_webp_rgb(char* src, unsigned char** dst) {
 	int mips = 0;
 	int totalsize = sizeof(header);
 	if (poweroftwo(width) && poweroftwo(height)) {
-		while ((height >> mips) > 8 && (width >> mips) > 8) {
+		while ((height >> mips) >= MINSIZE && (width >> mips) >= MINSIZE) {
 			totalsize += (height >> mips) * (width >> mips) * 4;
 			mips++;
 		}
-		mips++;
 		if (DEBUG) printf("RGB: Allocating %d bytes for %d mip%s.\n", totalsize, mips, mips==1?"":"s");
 		header.dwFlags |= 0x20000;
 		header.dwMipMapCount = mips;
@@ -262,7 +261,7 @@ int ddsfs_webp_rgb(char* src, unsigned char** dst) {
 
 	if (mips > 0) {
 		int curmip = 0;
-		while (width > 8 && height > 8) {
+		while (width > MINSIZE && height > MINSIZE) {
 			if (DEBUG >= 2) printf("RGB: Resample mip %d (%d x %d)\n", ++curmip, width, height);
 			halveimage(dstpos-bytes, width, height, dstpos);
 			width >>= 1;
@@ -274,7 +273,8 @@ int ddsfs_webp_rgb(char* src, unsigned char** dst) {
 	}
 	
 	if (DEBUG >= 2) printf("RGB: Wrote a total of %d bytes.\n", (int)(dstpos-(*dst)));
-	
+	if (dstpos != *dst + totalsize) printf("Warning: Calculated size %d different from actual end offset %d!\n", totalsize, (int)(dstpos-*dst));
+
 	if (DEBUG) {
 		ftime(&end);
 		int diff = (1000.0 * (end.time - mid.time) + (end.millitm - mid.millitm));

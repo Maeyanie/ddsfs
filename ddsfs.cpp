@@ -100,7 +100,7 @@ static inline int dds_size(int width, int height) {
 	int pixels = 0;
 	int mips = 0;
 	// This really seems like it could be done with a single formula.
-	while ((height >> mips) > 8 && (width >> mips) > 8) {
+	while ((height >> mips) >= MINSIZE && (width >> mips) >= MINSIZE) {
 		pixels += (height >> mips) * (width >> mips);
 		mips++;
 	}
@@ -335,7 +335,7 @@ static int ddsfs_open(const char *path, struct fuse_file_info *fi)
 					refresh(rwpath);
 					pthread_rwlock_unlock(&cachelock);
 					fi->fh = fd;
-					return fd;
+					return 0;
 				}
 				pthread_rwlock_unlock(&cachelock);
 			}
@@ -384,7 +384,7 @@ static int ddsfs_open(const char *path, struct fuse_file_info *fi)
 				if (DEBUG >= 2) printf("cache: Reopen returned %d.\n", res);
 				if (res == -1) return -errno;
 				fi->fh = res;
-				return res;
+				return 0;
 			} else {
 				pthread_rwlock_wrlock(&cachelock);
 				int fd;
@@ -410,7 +410,7 @@ static int ddsfs_open(const char *path, struct fuse_file_info *fi)
 					if (config.cache >= CACHE_MEM) tidycache();
 				}
 				pthread_rwlock_unlock(&cachelock);
-				return fd;
+				return 0;
 			}
 		} else {
 			return -errno;

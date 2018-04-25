@@ -5,7 +5,11 @@
  * If the authors of that thread have any complaints about this, please let me know.
  */
 
+#ifdef __WINDOWS
 #include <intrin.h>
+#else
+#include <emmintrin.h>
+#endif
 
 inline static unsigned int avg2(unsigned int a, unsigned int b) {
     return (((a^b) & 0xfefefefeUL) >> 1) + (a&b);
@@ -21,10 +25,15 @@ inline static void average2Rows(const unsigned int* src_row1, const unsigned int
 	for (int x = w; x; --x, dst_row++, src_row1 += 2, src_row2 += 2) {
 		*dst_row = avg4(src_row1, src_row2);
 	}
-#else
+#else	
 	for (int x = w; x; x-=4, dst_row+=4, src_row1 += 8, src_row2 += 8) {
-		__m128i left  = _mm_avg_epu8(_mm_load_si128((__m128i const*)src_row1), _mm_load_si128((__m128i const*)src_row2));
-		__m128i right = _mm_avg_epu8(_mm_load_si128((__m128i const*)(src_row1+4)), _mm_load_si128((__m128i const*)(src_row2+4)));
+		auto row1l = _mm_load_si128((__m128i const*)src_row1);
+		auto row2l = _mm_load_si128((__m128i const*)src_row2);
+		__m128i left  = _mm_avg_epu8(row1l, row2l);
+		
+		auto row1r = _mm_load_si128((__m128i const*)(src_row1+4));
+		auto row2r = _mm_load_si128((__m128i const*)(src_row2+4));
+		__m128i right = _mm_avg_epu8(row1r, row2r);
 
 		__m128i t0 = _mm_unpacklo_epi32(left, right);
 		__m128i t1 = _mm_unpackhi_epi32(left, right);
@@ -40,6 +49,6 @@ void halveimage(const unsigned char* src, int width, int height, unsigned char* 
 	const unsigned int* isrc = (const unsigned int*)src;
 	unsigned int* idst = (unsigned int*)dst;
 	for (int r = 0; r < height; r+=2) {
-		average2Rows(isrc + (r*width), isrc + ((r+1)*width), idst + ((r/2)*(width/2)), width);
+		average2Rows(isrc + (r*width), isrc + ((r+1)*width), idst + ((r/2)*(width/2)), width/2);
 	}
 }

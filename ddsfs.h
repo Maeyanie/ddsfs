@@ -5,6 +5,8 @@
 #define DEBUG config.debug
 #endif
 
+#define MINSIZE 16
+
 extern struct Config {
 	char* basepath;
 	unsigned int cache;
