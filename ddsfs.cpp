@@ -293,14 +293,20 @@ static void tidycache()
 		do {
 			if (i == memlru.end()) return;
 			j = memindex[*i];
+			if (j == NULL) {
+				fprintf(stderr, "Error: Tidy found LRU list item '%s' which isn't in index.\n", i->c_str());
+				break;
+			}
 			if (j->refs == 0) break;
 			i++;
 		} while (1);
 
-		printf("memcache: Removed %s from cache.\n", j->name.c_str());
-		memindex.erase(j->name);
+		if (j) {
+			printf("memcache: Removed %s from cache.\n", j->name.c_str());
+			memindex.erase(j->name);
+			delete j;
+		}
 		memlru.erase(i);
-		delete j;
 	}
 }
 static void refresh(const string& name) {
