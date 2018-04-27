@@ -96,39 +96,6 @@ static unordered_map<string,CacheEntry*> memindex;
 static list<string> memlru;
 static int nextfd = 100;
 
-static inline int dds_size(int width, int height, int alpha=0) {
-	int pixels = 0;
-	int mips = 0;
-	// This really seems like it could be done with a single formula.
-	while ((height >> mips) >= MINSIZE && (width >> mips) >= MINSIZE) {
-		pixels += (height >> mips) * (width >> mips);
-		mips++;
-	}
-	if (config.compress) {
-		if (alpha) return sizeof(DDS_HEADER) + (pixels);
-		return sizeof(DDS_HEADER) + (pixels/2);
-	} else {
-		return sizeof(DDS_HEADER) + (pixels*4);
-	}
-}
-
-static inline int cached_size(const char* path) {
-	if (config.cache == CACHE_DISK) return -1;
-	int size = -1;
-	
-	if (DEBUG >= 3) printf("memcache: Checking for cached size of '%s': ", path);
-	pthread_rwlock_rdlock(&cachelock);
-	auto i = memindex.find(path);
-	if (i != memindex.end()) {
-		size = i->second->len;
-		if (DEBUG >= 3) printf("%d bytes.\n", size);
-	} else {
-		if (DEBUG >= 3) printf("Not found.\n");
-	}
-	pthread_rwlock_unlock(&cachelock);
-	return size;
-}
-
 
 static int ddsfs_opt_proc(void *data, const char *arg, int key, struct fuse_args *outargs)
 {
@@ -183,7 +150,7 @@ static int ddsfs_getattr(const char *path, struct stat *stbuf)
 			strcpy(ext, ".jpg");
 			res = lstat(rwpath, stbuf);
 			if (res == 0) {
-				int size = cached_size(rwpath);
+				int size = sizecache_get(rwpath);
 				if (size != -1) {
 					stbuf->st_size = size;
 				} else if (config.size) {
@@ -192,6 +159,7 @@ static int ddsfs_getattr(const char *path, struct stat *stbuf)
 					if (res != 0) return -errno;
 					
 					stbuf->st_size = dds_size(width, height);
+					sizecache_set(rwpath, stbuf->st_size);
 				}
 				return 0;
 			}
@@ -199,7 +167,7 @@ static int ddsfs_getattr(const char *path, struct stat *stbuf)
 			strcpy(ext, ".webp");
 			res = lstat(rwpath, stbuf);
 			if (res == 0) {
-				int size = cached_size(rwpath);
+				int size = sizecache_get(rwpath);
 				if (size != -1) {
 					stbuf->st_size = size;
 				} else if (config.size) {
@@ -208,6 +176,7 @@ static int ddsfs_getattr(const char *path, struct stat *stbuf)
 					if (res != 0) return -errno;
 					
 					stbuf->st_size = dds_size(width, height, alpha);
+					sizecache_set(rwpath, stbuf->st_size);
 				}
 				return 0;
 			}
@@ -252,8 +221,8 @@ static int ddsfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	dp = opendir(rwpath);
 	if (dp == NULL) return -errno;
 
+	struct stat st;
 	while ((de = readdir(dp))) {
-		struct stat st;
 		memset(&st, 0, sizeof(st));
 		if (DEBUG >= 2) printf("\t%s\n", de->d_name);
 		
@@ -281,7 +250,7 @@ static int ddsfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 			strcpy(ext, ".dds");
 			sprintf(testpath, "%s/%s", rwpath, rwname);
 			if (stat(testpath, &st) == -1) {
-				int size = cached_size(testpath);
+				int size = sizecache_get(testpath);
 				if (size != -1) st.st_size = size;
 				filler(buf, rwname, &st, 0);
 				if (DEBUG >= 3) printf("\t\tAdded .dds\n");
@@ -298,7 +267,7 @@ static int ddsfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 			strcpy(ext, ".dds");
 			sprintf(testpath, "%s/%s", rwpath, rwname);
 			if (stat(testpath, &st) == -1) {
-				int size = cached_size(testpath);
+				int size = sizecache_get(testpath);
 				if (size != -1) st.st_size = size;
 				filler(buf, rwname, &st, 0);
 				if (DEBUG >= 3) printf("\t\tAdded .dds\n");
@@ -459,6 +428,7 @@ static int ddsfs_open(const char *path, struct fuse_file_info *fi)
 					memindex[rwpath] = ce;
 					memlru.push_back(rwpath);
 					if (config.cache >= CACHE_MEM) tidycache();
+					sizecache_set(rwpath, len);
 				}
 				pthread_rwlock_unlock(&cachelock);
 				return 0;
