@@ -96,7 +96,7 @@ static unordered_map<string,CacheEntry*> memindex;
 static list<string> memlru;
 static int nextfd = 100;
 
-static inline int dds_size(int width, int height) {
+static inline int dds_size(int width, int height, int alpha=0) {
 	int pixels = 0;
 	int mips = 0;
 	// This really seems like it could be done with a single formula.
@@ -104,8 +104,29 @@ static inline int dds_size(int width, int height) {
 		pixels += (height >> mips) * (width >> mips);
 		mips++;
 	}
-	if (config.compress) return sizeof(DDS_HEADER) + (pixels/2);
-	else return sizeof(DDS_HEADER) + (pixels*4);
+	if (config.compress) {
+		if (alpha) return sizeof(DDS_HEADER) + (pixels);
+		return sizeof(DDS_HEADER) + (pixels/2);
+	} else {
+		return sizeof(DDS_HEADER) + (pixels*4);
+	}
+}
+
+static inline int cached_size(const char* path) {
+	if (config.cache == CACHE_DISK) return -1;
+	int size = -1;
+	
+	if (DEBUG >= 3) printf("memcache: Checking for cached size of '%s': ", path);
+	pthread_rwlock_rdlock(&cachelock);
+	auto i = memindex.find(path);
+	if (i != memindex.end()) {
+		size = i->second->len;
+		if (DEBUG >= 3) printf("%d bytes.\n", size);
+	} else {
+		if (DEBUG >= 3) printf("Not found.\n");
+	}
+	pthread_rwlock_unlock(&cachelock);
+	return size;
 }
 
 
@@ -125,9 +146,9 @@ static int ddsfs_opt_proc(void *data, const char *arg, int key, struct fuse_args
 			"    -o rgb                 Convert to RGB/RGBA\n"
 			"    -o cache=0             Cache DDS files in memory only as long as they are open\n"
 			"    -o cache=1             Save DDS files on disk until manually removed (default)\n"
+			"    -o cache=#             Cache up to # DDS files in memory, removed on a least-recently-used basis\n"
 			"    -o size                Calculate sizes for fake DDS files. Slow, but some programs need it\n"
 			"    -o nosize              Give fake DDS file sizes as the source file size (default)\n"
-			"    -o cache=#             Cache up to # DDS files in memory, removed on a least-recently-used basis\n"
 			"    -o nocache             Equivalent to -o cache=0\n"
 			"    -o verbose[=#]         Set level of information on DDSFS's operations\n"
 			"\n", outargs->argv[0]);
@@ -147,32 +168,25 @@ static int ddsfs_opt_proc(void *data, const char *arg, int key, struct fuse_args
 static int ddsfs_getattr(const char *path, struct stat *stbuf)
 {
 	int res;
-	char rwpath[strlen(config.basepath)+strlen(path)+2];
+	char rwpath[strlen(config.basepath)+strlen(path)+1];
 	char* ext;
 
-	sprintf(rwpath, "%s/%s", config.basepath, path);
+	sprintf(rwpath, "%s%s", config.basepath, path);
 	if (DEBUG >= 3) printf("getattr: %s\n", rwpath);
 
 	res = lstat(rwpath, stbuf);
 	if (res == -1) {
+		if (DEBUG >= 3) printf("getattr: lstat failed on '%s', looking for alternates.\n", rwpath);
 		ext = strrchr(rwpath, '.');
 		if (!ext) return -errno;
 		if (!strcasecmp(ext, ".dds")) {
-			if (config.cache != CACHE_DISK) {
-				pthread_rwlock_rdlock(&cachelock);
-				auto i = memindex.find(rwpath);
-				if (i != memindex.end()) {
-					stbuf->st_size = i->second->len;
-					pthread_rwlock_unlock(&cachelock);
-					return 0;
-				}
-				pthread_rwlock_unlock(&cachelock);
-			}
-		
 			strcpy(ext, ".jpg");
 			res = lstat(rwpath, stbuf);
 			if (res == 0) {
-				if (config.size) {
+				int size = cached_size(rwpath);
+				if (size != -1) {
+					stbuf->st_size = size;
+				} else if (config.size) {
 					int width, height;
 					res = ddsfs_jpg_header(rwpath, &width, &height);
 					if (res != 0) return -errno;
@@ -184,7 +198,19 @@ static int ddsfs_getattr(const char *path, struct stat *stbuf)
 			
 			strcpy(ext, ".webp");
 			res = lstat(rwpath, stbuf);
-			if (res == 0) return 0;
+			if (res == 0) {
+				int size = cached_size(rwpath);
+				if (size != -1) {
+					stbuf->st_size = size;
+				} else if (config.size) {
+					int width, height, alpha;
+					res = ddsfs_webp_header(rwpath, &width, &height, &alpha);
+					if (res != 0) return -errno;
+					
+					stbuf->st_size = dds_size(width, height, alpha);
+				}
+				return 0;
+			}
 			
 			return -errno;
 		} else return -errno;
@@ -195,9 +221,11 @@ static int ddsfs_getattr(const char *path, struct stat *stbuf)
 
 static int ddsfs_access(const char *path, int mask)
 {
+	char rwpath[strlen(config.basepath)+strlen(path)+1];
 	int res;
 
-	res = access(path, mask);
+	sprintf(rwpath, "%s%s", config.basepath, path);
+	res = access(rwpath, mask);
 	if (res == -1)
 		return -errno;
 
@@ -253,6 +281,8 @@ static int ddsfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 			strcpy(ext, ".dds");
 			sprintf(testpath, "%s/%s", rwpath, rwname);
 			if (stat(testpath, &st) == -1) {
+				int size = cached_size(testpath);
+				if (size != -1) st.st_size = size;
 				filler(buf, rwname, &st, 0);
 				if (DEBUG >= 3) printf("\t\tAdded .dds\n");
 			} else {
@@ -268,6 +298,8 @@ static int ddsfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 			strcpy(ext, ".dds");
 			sprintf(testpath, "%s/%s", rwpath, rwname);
 			if (stat(testpath, &st) == -1) {
+				int size = cached_size(testpath);
+				if (size != -1) st.st_size = size;
 				filler(buf, rwname, &st, 0);
 				if (DEBUG >= 3) printf("\t\tAdded .dds\n");
 			} else {
@@ -302,7 +334,7 @@ static void tidycache()
 		} while (1);
 
 		if (j) {
-			printf("memcache: Removed %s from cache.\n", j->name.c_str());
+			printf("memcache: Removed '%s' from cache.\n", j->name.c_str());
 			memindex.erase(j->name);
 			delete j;
 		}
@@ -322,11 +354,11 @@ static void refresh(const string& name) {
 static int ddsfs_open(const char *path, struct fuse_file_info *fi)
 {
 	int res;
-	char rwpath[strlen(config.basepath)+strlen(path)+2];
+	char rwpath[strlen(config.basepath)+strlen(path)+1];
 	char* ext;
 	struct stat st;
 	
-	sprintf(rwpath, "%s/%s", config.basepath, path);
+	sprintf(rwpath, "%s%s", config.basepath, path);
 	
 	if (DEBUG) printf("open: %s\n", rwpath);
 	res = open(rwpath, fi->flags);
@@ -421,7 +453,7 @@ static int ddsfs_open(const char *path, struct fuse_file_info *fi)
 					free(dds);
 					refresh(rwpath);
 				} else {
-					if (DEBUG) printf("memcache: Using FD %d for %d bytes.\n", fd, len);
+					if (DEBUG) printf("memcache: Using FD %d for %d bytes: '%s'\n", fd, len, rwpath);
 					CacheEntry* ce = new CacheEntry(rwpath, dds, len);
 					memcache[fd] = ce;
 					memindex[rwpath] = ce;

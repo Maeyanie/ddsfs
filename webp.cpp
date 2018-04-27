@@ -22,7 +22,7 @@
 
 
 
-int ddsfs_webp_header(const char* src, int* width, int* height) {
+int ddsfs_webp_header(const char* src, int* width, int* height, int* alpha) {
 	int fd = open(src, O_RDONLY);
 	if (fd == -1) {
 		fprintf(stderr, "WebP: Could not open '%s' for read.\n", src);
@@ -45,6 +45,7 @@ int ddsfs_webp_header(const char* src, int* width, int* height) {
 
 	*width = wpbf.width;
 	*height = wpbf.height;
+	*alpha = wpbf.has_alpha;
 	return 0;
 }
 

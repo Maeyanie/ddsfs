@@ -13,6 +13,8 @@ extern struct Config {
 	char compress;
 	char debug;
 	char size;
+	// ASan reports fuse parsing going off the end of the array, and I can't be bothered fixing fuse.
+	char deadspace[32];
 } config;
 
 struct DDS_PIXELFORMAT {
@@ -53,7 +55,7 @@ int ddsfs_jpg_header(const char* src, int* width, int* height);
 int ddsfs_jpg_dxt1(char* src, unsigned char** dst);
 int ddsfs_jpg_rgb(char* src, unsigned char** dst);
 
-int ddsfs_webp_header(const char* src, int* width, int* height);
+int ddsfs_webp_header(const char* src, int* width, int* height, int* alpha);
 int ddsfs_webp_dxt1(char* src, unsigned char** dst);
 int ddsfs_webp_rgb(char* src, unsigned char** dst);
 

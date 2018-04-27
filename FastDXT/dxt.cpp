@@ -42,8 +42,8 @@ void CompressImageDXT1( const byte *inBuf, byte *outBuf,
 {
   ALIGN16( byte *outData );
   ALIGN16( byte block[64] );
-  ALIGN16( byte minColor[4] );
-  ALIGN16( byte maxColor[4] );
+  ALIGN16( byte minColor[16] );	// Originally 4 bytes, but _mm_store_si128 needs them to be at least 16 to not oveflow.
+  ALIGN16( byte maxColor[16] );
 
   outData = outBuf;
   for ( int j = 0; j < height; j += 4, inBuf += width * 4*4 ) {
