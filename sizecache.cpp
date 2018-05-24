@@ -29,11 +29,14 @@ int dds_size(int width, int height, int alpha) {
 int sizecache_get(const char* name) {
 	auto i = sizecache.find(name);
 	if (i != sizecache.end()) {
+		if (DEBUG >= 3) printf("SizeCache: Found %d bytes for '%s'\n", i->second, name);
 		return i->second;
 	}
+	if (DEBUG >= 3) printf("SizeCache: No entry for '%s'\n", name);
 	return -1;
 }
 
 void sizecache_set(const char* name, int size) {
+	if (DEBUG >= 3) printf("SizeCache: Set %d bytes for '%s'\n", size, name);
 	sizecache[name] = size;
 }

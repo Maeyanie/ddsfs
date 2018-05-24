@@ -111,11 +111,11 @@ static int ddsfs_opt_proc(void *data, const char *arg, int key, struct fuse_args
 			"DDSFS options:\n"
 			"    -o dxt                 Convert to DXT1/DXT5 (default)\n"
 			"    -o rgb                 Convert to RGB/RGBA\n"
-			"    -o cache=0             Cache DDS files in memory only as long as they are open\n"
-			"    -o cache=1             Save DDS files on disk until manually removed (default)\n"
-			"    -o cache=#             Cache up to # DDS files in memory, removed on a least-recently-used basis\n"
-			"    -o size                Calculate sizes for fake DDS files. Slow, but some programs need it\n"
-			"    -o nosize              Give fake DDS file sizes as the source file size (default)\n"
+			"    -o cache=0             Cache files in memory only as long as they are open\n"
+			"    -o cache=1             Save files on disk until manually removed (default)\n"
+			"    -o cache=#             Cache up to # files in memory, removed on a least-recently-used basis\n"
+			"    -o size                Calculate sizes for fake files. Slow, but some programs need it\n"
+			"    -o nosize              Give fake file sizes as the source file size (default)\n"
 			"    -o nocache             Equivalent to -o cache=0\n"
 			"    -o verbose[=#]         Set level of information on DDSFS's operations\n"
 			"\n", outargs->argv[0]);
@@ -135,10 +135,12 @@ static int ddsfs_opt_proc(void *data, const char *arg, int key, struct fuse_args
 static int ddsfs_getattr(const char *path, struct stat *stbuf)
 {
 	int res;
-	char rwpath[strlen(config.basepath)+strlen(path)+1];
+	char origpath[strlen(config.basepath)+strlen(path)+1];
+	char rwpath[strlen(config.basepath)+strlen(path)+8];
 	char* ext;
 
-	sprintf(rwpath, "%s%s", config.basepath, path);
+	sprintf(origpath, "%s%s", config.basepath, path);
+	strcpy(rwpath, origpath);
 	if (DEBUG >= 3) printf("getattr: %s\n", rwpath);
 
 	res = lstat(rwpath, stbuf);
@@ -147,10 +149,11 @@ static int ddsfs_getattr(const char *path, struct stat *stbuf)
 		ext = strrchr(rwpath, '.');
 		if (!ext) return -errno;
 		if (!strcasecmp(ext, ".dds")) {
+			#if USE_JPG
 			strcpy(ext, ".jpg");
 			res = lstat(rwpath, stbuf);
 			if (res == 0) {
-				int size = sizecache_get(rwpath);
+				int size = sizecache_get(origpath);
 				if (size != -1) {
 					stbuf->st_size = size;
 				} else if (config.size) {
@@ -163,11 +166,13 @@ static int ddsfs_getattr(const char *path, struct stat *stbuf)
 				}
 				return 0;
 			}
+			#endif
 			
+			#if USE_WEBP
 			strcpy(ext, ".webp");
 			res = lstat(rwpath, stbuf);
 			if (res == 0) {
-				int size = sizecache_get(rwpath);
+				int size = sizecache_get(origpath);
 				if (size != -1) {
 					stbuf->st_size = size;
 				} else if (config.size) {
@@ -180,9 +185,52 @@ static int ddsfs_getattr(const char *path, struct stat *stbuf)
 				}
 				return 0;
 			}
+			#endif
 			
 			return -errno;
-		} else return -errno;
+		} else {
+			ext += strlen(ext);
+
+			#if USE_GZIP
+			strcpy(ext, ".gz");
+			res = lstat(rwpath, stbuf);
+			if (res == 0) {
+				int size = sizecache_get(origpath);
+				if (size != -1) {
+					stbuf->st_size = size;
+				} else if (config.size) {
+					int width, height, alpha;
+					res = ddsfs_gzip_header(rwpath, &size);
+					if (res != 0) return -errno;
+					
+					stbuf->st_size = size;
+					sizecache_set(rwpath, stbuf->st_size);
+				}
+				return 0;				
+			}
+			#endif
+			
+			#if USE_XZ
+			strcpy(ext, ".xz");
+			res = lstat(rwpath, stbuf);
+			if (res == 0) {
+				int size = sizecache_get(origpath);
+				if (size != -1) {
+					stbuf->st_size = size;
+				} else if (config.size) {
+					int width, height, alpha;
+					res = ddsfs_xz_header(rwpath, &size);
+					if (res != 0) return -errno;
+					
+					stbuf->st_size = size;
+					sizecache_set(rwpath, stbuf->st_size);
+				}
+				return 0;				
+			}
+			#endif
+			
+			return -errno;
+		}
 	}
 
 	return 0;
@@ -239,8 +287,11 @@ static int ddsfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		ext = strrchr(rwname, '.');
 		if (DEBUG >= 3) printf("\t\tpath='%s' ext='%s'\n", rwname, ext);
 		if (!ext) {
-			// Meh.
-		} else if (!strcasecmp(ext, ".jpg")) {
+			// Not important.
+		}
+		
+		#if USE_JPG
+		else if (!strcasecmp(ext, ".jpg")) {
 			if (strlen(rwpath)+strlen(rwname)+1 >= testpathlen) {
 				testpathlen = strlen(rwpath)+strlen(rwname)+2;
 				testpath = (char*)realloc(testpath, testpathlen);
@@ -257,7 +308,11 @@ static int ddsfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 			} else {
 				if (DEBUG >= 3) printf("\t\tSkipped .dds\n");
 			}
-		} else if (!strcasecmp(ext, ".webp")) {
+		}
+		#endif
+		
+		#if USE_WEBP
+		else if (!strcasecmp(ext, ".webp")) {
 			if (strlen(rwpath)+strlen(rwname)+1 >= testpathlen) {
 				testpathlen = strlen(rwpath)+strlen(rwname)+2;
 				testpath = (char*)realloc(testpath, testpathlen);
@@ -275,6 +330,49 @@ static int ddsfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 				if (DEBUG >= 3) printf("\t\tSkipped .dds\n");
 			}
 		}
+		#endif
+		
+		#if USE_GZIP
+		else if (!strcasecmp(ext, ".gz")) {
+			if (strlen(rwpath)+strlen(rwname)+1 >= testpathlen) {
+				testpathlen = strlen(rwpath)+strlen(rwname)+2;
+				testpath = (char*)realloc(testpath, testpathlen);
+			}
+			if (DEBUG >= 3) printf("\tFound .gz file.\n");
+
+			*ext = 0;
+			sprintf(testpath, "%s/%s", rwpath, rwname);
+			if (stat(testpath, &st) == -1) {
+				int size = sizecache_get(testpath);
+				if (size != -1) st.st_size = size;
+				filler(buf, rwname, &st, 0);
+				if (DEBUG >= 3) printf("\t\tAdded .gz\n");
+			} else {
+				if (DEBUG >= 3) printf("\t\tSkipped .gz\n");
+			}
+		}
+		#endif
+		
+		#if USE_XZ
+		else if (!strcasecmp(ext, ".xz")) {
+			if (strlen(rwpath)+strlen(rwname)+1 >= testpathlen) {
+				testpathlen = strlen(rwpath)+strlen(rwname)+2;
+				testpath = (char*)realloc(testpath, testpathlen);
+			}
+			if (DEBUG >= 3) printf("\tFound .xz file.\n");
+
+			*ext = 0;
+			sprintf(testpath, "%s/%s", rwpath, rwname);
+			if (stat(testpath, &st) == -1) {
+				int size = sizecache_get(testpath);
+				if (size != -1) st.st_size = size;
+				filler(buf, rwname, &st, 0);
+				if (DEBUG >= 3) printf("\t\tAdded .xz\n");
+			} else {
+				if (DEBUG >= 3) printf("\t\tSkipped .xz\n");
+			}
+		}
+		#endif
 	}
 
 	closedir(dp);
@@ -334,107 +432,132 @@ static int ddsfs_open(const char *path, struct fuse_file_info *fi)
 	if (res == -1) {
 		ext = strrchr(rwpath, '.');
 		if (!ext) return -errno;
-		if (!strcasecmp(ext, ".dds")) {
-			if (DEBUG) printf("\tOpening .dds which does not exist.\n");
-			char srcpath[strlen(rwpath)+2];
-			unsigned char* dds = NULL;
-			int len = 0;
-			
-			if (config.cache != CACHE_DISK) {
-				pthread_rwlock_wrlock(&cachelock);
-				auto i = memindex.find(rwpath);
-				if (i != memindex.end()) {
-					int fd;
-					do {
-						fd = nextfd++;
-						if (nextfd > 1000000) nextfd = 100;
-					} while (memcache.find(fd) != memcache.end());
-					if (DEBUG) printf("memcache: Using FD %d for existing reference.\n", fd);
-					memcache[fd] = i->second;
-					i->second->refs++;
-					refresh(rwpath);
-					pthread_rwlock_unlock(&cachelock);
-					fi->fh = fd;
-					return 0;
-				}
-				pthread_rwlock_unlock(&cachelock);
-			}
-			
-			// Try to decode a .jpg alternate
-			strcpy(srcpath, rwpath);
-			ext = strrchr(srcpath, '.');
-			strcpy(ext, ".jpg");
-			res = stat(srcpath, &st);
-			if (res == 0) {
-				if (config.compress) len = ddsfs_jpg_dxt1(srcpath, &dds);
-				else len = ddsfs_jpg_rgb(srcpath, &dds);
-				if (len == -1) return -errno;
-			}
-			
-			if (!dds) {
-				// Try to decode a .webp alternate.
-				strcpy(srcpath, rwpath);
-				ext = strrchr(srcpath, '.');
-				strcpy(ext, ".webp");
-				res = stat(srcpath, &st);
-				if (res == 0) {
-					if (config.compress) len = ddsfs_webp_dxt1(srcpath, &dds);
-					else len = ddsfs_webp_rgb(srcpath, &dds);
-					if (len == -1) return -errno;
-				}
-			}
-			
-			// Failed to decode another file, bail out.
-			if (!dds) return -ENOENT;
-						
-			if (config.cache == CACHE_DISK) {
-				if (DEBUG >= 2) printf("cache: Writing %d bytes to '%s'\n", len, rwpath);
-				int fd = open(rwpath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-				if (fd == -1) {
-					fprintf(stderr, "cache: Could not open '%s' for write.\n", rwpath);
-					free(dds);
-					return -errno;
-				}
-				len = write(fd, dds, len);
-				close(fd);
-				free(dds);
-				if (DEBUG >= 2) printf("cache: Wrote %d bytes.\n", len);
-				
-				res = open(rwpath, fi->flags);
-				if (DEBUG >= 2) printf("cache: Reopen returned %d.\n", res);
-				if (res == -1) return -errno;
-				fi->fh = res;
-				return 0;
-			} else {
-				pthread_rwlock_wrlock(&cachelock);
+		if (DEBUG) printf("\tOpening file which does not exist.\n");
+		char srcpath[strlen(rwpath)+8];
+		unsigned char* dds = NULL;
+		int len = 0;
+		
+		if (config.cache != CACHE_DISK) {
+			pthread_rwlock_wrlock(&cachelock);
+			auto i = memindex.find(rwpath);
+			if (i != memindex.end()) {
 				int fd;
 				do {
 					fd = nextfd++;
 					if (nextfd > 1000000) nextfd = 100;
 				} while (memcache.find(fd) != memcache.end());
-				fi->fh = fd;
-
-				auto i = memindex.find(rwpath);
-				if (i != memindex.end()) {
-					if (DEBUG) printf("memcache: Recheck found FD %d for existing reference.\n", fd);
-					memcache[fd] = i->second;
-					i->second->refs++;
-					free(dds);
-					refresh(rwpath);
-				} else {
-					if (DEBUG) printf("memcache: Using FD %d for %d bytes: '%s'\n", fd, len, rwpath);
-					CacheEntry* ce = new CacheEntry(rwpath, dds, len);
-					memcache[fd] = ce;
-					memindex[rwpath] = ce;
-					memlru.push_back(rwpath);
-					if (config.cache >= CACHE_MEM) tidycache();
-					sizecache_set(rwpath, len);
-				}
+				if (DEBUG) printf("memcache: Using FD %d for existing reference.\n", fd);
+				memcache[fd] = i->second;
+				i->second->refs++;
+				refresh(rwpath);
 				pthread_rwlock_unlock(&cachelock);
+				fi->fh = fd;
 				return 0;
 			}
+			pthread_rwlock_unlock(&cachelock);
+		}
+		
+		#if USE_JPG
+		strcpy(srcpath, rwpath);
+		ext = strrchr(srcpath, '.');
+		strcpy(ext, ".jpg");
+		res = stat(srcpath, &st);
+		if (res == 0) {
+			if (config.compress) len = ddsfs_jpg_dxt1(srcpath, &dds);
+			else len = ddsfs_jpg_rgb(srcpath, &dds);
+			if (len == -1) return -errno;
+		}
+		#endif
+		
+		#if USE_WEBP
+		if (!dds) {
+			strcpy(srcpath, rwpath);
+			ext = strrchr(srcpath, '.');
+			strcpy(ext, ".webp");
+			res = stat(srcpath, &st);
+			if (res == 0) {
+				if (config.compress) len = ddsfs_webp_dxt1(srcpath, &dds);
+				else len = ddsfs_webp_rgb(srcpath, &dds);
+				if (len == -1) return -errno;
+			}
+		}
+		#endif
+		
+		#if USE_GZIP
+		if (!dds) {
+			strcpy(srcpath, rwpath);
+			ext = srcpath + strlen(srcpath);
+			strcpy(ext, ".gz");
+			res = stat(srcpath, &st);
+			if (res == 0) {
+				len = ddsfs_gzip(srcpath, &dds);
+				if (len == -1) return -errno;
+			}
+		}
+		#endif
+		
+		#if USE_XZ
+		if (!dds) {
+			strcpy(srcpath, rwpath);
+			ext = srcpath + strlen(srcpath);
+			strcpy(ext, ".xz");
+			res = stat(srcpath, &st);
+			if (res == 0) {
+				len = ddsfs_xz(srcpath, &dds);
+				if (len == -1) return -errno;
+			}
+		}
+		#endif
+		
+		// Failed to decode another file, bail out.
+		if (!dds) return -ENOENT;
+
+		if (config.cache == CACHE_DISK) {
+			if (DEBUG >= 2) printf("cache: Writing %d bytes to '%s'\n", len, rwpath);
+			int fd = open(rwpath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+			if (fd == -1) {
+				fprintf(stderr, "cache: Could not open '%s' for write.\n", rwpath);
+				free(dds);
+				return -errno;
+			}
+			len = write(fd, dds, len);
+			close(fd);
+			free(dds);
+			if (DEBUG >= 2) printf("cache: Wrote %d bytes.\n", len);
+			
+			res = open(rwpath, fi->flags);
+			if (DEBUG >= 2) printf("cache: Reopen returned %d.\n", res);
+			if (res == -1) return -errno;
+			fi->fh = res;
+			return 0;
 		} else {
-			return -errno;
+			pthread_rwlock_wrlock(&cachelock);
+			sizecache_set(rwpath, len);
+
+			int fd;
+			do {
+				fd = nextfd++;
+				if (nextfd > 1000000) nextfd = 100;
+			} while (memcache.find(fd) != memcache.end());
+			fi->fh = fd;
+
+			auto i = memindex.find(rwpath);
+			if (i != memindex.end()) {
+				if (DEBUG) printf("memcache: Recheck found FD %d for existing reference.\n", fd);
+				memcache[fd] = i->second;
+				i->second->refs++;
+				free(dds);
+				refresh(rwpath);
+			} else {
+				if (DEBUG) printf("memcache: Using FD %d for %d bytes: '%s'\n", fd, len, rwpath);
+				CacheEntry* ce = new CacheEntry(rwpath, dds, len);
+				memcache[fd] = ce;
+				memindex[rwpath] = ce;
+				memlru.push_back(rwpath);
+				if (config.cache >= CACHE_MEM) tidycache();
+			}
+			pthread_rwlock_unlock(&cachelock);
+			return 0;
 		}
 	}
 
