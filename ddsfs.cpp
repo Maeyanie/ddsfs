@@ -39,36 +39,12 @@ using namespace std;
 
 
 
-class CacheEntry {
-public:
-	string name;
-	unsigned char* data;
-	unsigned int len;
-	int refs;
-	
-	CacheEntry(const char* n, unsigned char* d, unsigned int l) {
-		name = n;
-		data = d;
-		len = l;
-		refs = 1;
-	}
-	~CacheEntry() {
-		if (refs > 1) fprintf(stderr, "Warning: Deleting memory-cached file with %d refs!\n", refs);
-		if (data) free(data);
-	}
-};
-
-
 struct fuse_operations oper;
 struct Config config;
 enum {
 	KEY_HELP,
 };
-enum {
-	CACHE_NONE,
-	CACHE_DISK,
-	CACHE_MEM,
-};
+
 
 #define DDSFS_OPT(t, p, v) { t, offsetof(struct Config, p), v }
 static struct fuse_opt ddsfs_opts[] = {
@@ -90,11 +66,6 @@ static struct fuse_opt ddsfs_opts[] = {
 	FUSE_OPT_END
 };
 
-static pthread_rwlock_t cachelock;
-static unordered_map<int,CacheEntry*> memcache;
-static unordered_map<string,CacheEntry*> memindex;
-static list<string> memlru;
-static int nextfd = 100;
 
 
 static int ddsfs_opt_proc(void *data, const char *arg, int key, struct fuse_args *outargs)
@@ -382,42 +353,6 @@ static int ddsfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	return 0;
 }
 
-static void tidycache()
-{
-	list<string>::iterator i;
-	CacheEntry* j;
-	
-	while (memlru.size() > config.cache) {
-		i = memlru.begin();
-		do {
-			if (i == memlru.end()) return;
-			j = memindex[*i];
-			if (j == NULL) {
-				fprintf(stderr, "Error: Tidy found LRU list item '%s' which isn't in index.\n", i->c_str());
-				break;
-			}
-			if (j->refs == 0) break;
-			i++;
-		} while (1);
-
-		if (j) {
-			printf("memcache: Removed '%s' from cache.\n", j->name.c_str());
-			memindex.erase(j->name);
-			delete j;
-		}
-		memlru.erase(i);
-	}
-}
-static void refresh(const string& name) {
-	for (auto i = memlru.begin(); i != memlru.end(); i++) {
-		if (*i == name) {
-			memlru.erase(i);
-			break;
-		}
-	}
-	memlru.push_back(name);	
-}
-
 static int ddsfs_open(const char *path, struct fuse_file_info *fi)
 {
 	int res;
@@ -438,23 +373,12 @@ static int ddsfs_open(const char *path, struct fuse_file_info *fi)
 		int len = 0;
 		
 		if (config.cache != CACHE_DISK) {
-			pthread_rwlock_wrlock(&cachelock);
-			auto i = memindex.find(rwpath);
-			if (i != memindex.end()) {
-				int fd;
-				do {
-					fd = nextfd++;
-					if (nextfd > 1000000) nextfd = 100;
-				} while (memcache.find(fd) != memcache.end());
+			int fd = memcache_getfd(rwpath);
+			if (fd > 0) {
 				if (DEBUG) printf("memcache: Using FD %d for existing reference.\n", fd);
-				memcache[fd] = i->second;
-				i->second->refs++;
-				refresh(rwpath);
-				pthread_rwlock_unlock(&cachelock);
 				fi->fh = fd;
 				return 0;
 			}
-			pthread_rwlock_unlock(&cachelock);
 		}
 		
 		#if USE_JPG
@@ -531,32 +455,18 @@ static int ddsfs_open(const char *path, struct fuse_file_info *fi)
 			fi->fh = res;
 			return 0;
 		} else {
-			pthread_rwlock_wrlock(&cachelock);
-			sizecache_set(rwpath, len);
-
-			int fd;
-			do {
-				fd = nextfd++;
-				if (nextfd > 1000000) nextfd = 100;
-			} while (memcache.find(fd) != memcache.end());
-			fi->fh = fd;
-
-			auto i = memindex.find(rwpath);
-			if (i != memindex.end()) {
+			int fd = memcache_getfd(rwpath);
+			if (fd > 0) {
 				if (DEBUG) printf("memcache: Recheck found FD %d for existing reference.\n", fd);
-				memcache[fd] = i->second;
-				i->second->refs++;
 				free(dds);
-				refresh(rwpath);
 			} else {
+				sizecache_set(rwpath, len);
+				
+				fd = memcache_store(rwpath, dds, len);
+				
 				if (DEBUG) printf("memcache: Using FD %d for %d bytes: '%s'\n", fd, len, rwpath);
-				CacheEntry* ce = new CacheEntry(rwpath, dds, len);
-				memcache[fd] = ce;
-				memindex[rwpath] = ce;
-				memlru.push_back(rwpath);
-				if (config.cache >= CACHE_MEM) tidycache();
 			}
-			pthread_rwlock_unlock(&cachelock);
+			fi->fh = fd;
 			return 0;
 		}
 	}
@@ -576,25 +486,14 @@ static int ddsfs_read(const char *path, char *buf, size_t size, off_t offset,
 		sprintf(rwpath, "%s%s", config.basepath, path);
 		fd = open(path, O_RDONLY);
 		if (DEBUG) printf("read: Called with no info for file '%s'\n", path);
-	} else fd = fi->fh;
-	if (fd == -1) return -errno;
-	
-	if (config.cache != CACHE_DISK) {
-		pthread_rwlock_rdlock(&cachelock);
-		if (DEBUG >= 2) printf("read: Checking memory cache for FD %d.\n", fd);
-		auto i = memcache.find(fd);
-		if (i != memcache.end()) {
-			if (DEBUG >= 2) printf("read: %lu bytes at %ld from memory for FD %d.\n", size, offset, i->first);
-			if (size+offset > i->second->len) {
-				size = (i->second->len)-offset;
-				if (DEBUG) printf("read: Read would have exceeded length, reducing to %lu.\n", size);
-			}
-			memcpy(buf, (i->second->data)+offset, size);
-			pthread_rwlock_unlock(&cachelock);
-			return size;
+	} else {
+		fd = fi->fh;
+		if (config.cache != CACHE_DISK) {
+			int ret = memcache_read(fd, buf, size, offset);
+			if (ret >= 0) return ret;
 		}
-		pthread_rwlock_unlock(&cachelock);
 	}
+	if (fd == -1) return -errno;
 
 	res = pread(fd, buf, size, offset);
 	if (res == -1) res = -errno;
@@ -608,24 +507,7 @@ static int ddsfs_release(const char *path, struct fuse_file_info *fi)
 {
 	if (DEBUG >= 2) printf("release: %s\n", path);
 	if (fi == NULL || fi->fh == 0) return 0;
-	if (config.cache != CACHE_DISK) {
-		pthread_rwlock_wrlock(&cachelock);
-		auto i = memcache.find(fi->fh);
-		if (i != memcache.end()) {
-			if (config.cache == CACHE_NONE && i->second->refs <= 1) {
-				if (DEBUG) printf("release: Freeing %d bytes of memory for FD %d.\n", i->second->len, i->first);
-				memindex.erase(i->second->name);
-				delete i->second;
-			} else {
-				i->second->refs--;
-				if (DEBUG) printf("release: FD %d now has %d ref%s.\n", i->first, i->second->refs, i->second->refs==1?"":"s");
-			}
-			memcache.erase(i);
-			pthread_rwlock_unlock(&cachelock);
-			return 0;
-		}
-		pthread_rwlock_unlock(&cachelock);
-	}
+	if (config.cache != CACHE_DISK && memcache_release(fi->fh)) return 0;
 	return close(fi->fh);
 }
 
@@ -636,7 +518,7 @@ int main(int argc, char *argv[])
 	config.compress = 1;
 	config.size = 1;
 	
-	pthread_rwlock_init(&cachelock, NULL);
+	memcache_init();
 
 	memset(&oper, 0, sizeof(oper));
 	oper.getattr = ddsfs_getattr;

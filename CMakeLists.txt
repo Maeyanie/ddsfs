@@ -14,7 +14,7 @@ pkg_check_modules(WEBP libwebpdecoder)
 pkg_check_modules(GZIP zlib)
 pkg_check_modules(XZ liblzma)
 
-set(SOURCES ddsfs.cpp halveimage.cpp sizecache.cpp)
+set(SOURCES ddsfs.cpp halveimage.cpp sizecache.cpp memcache.cpp)
 set(INCLUDEDIRS ${FUSE_INCLUDE_DIRS})
 set(COMPILEOPTS ${FUSE_CFLAGS_OTHER})
 set(LIBRARIES ${FUSE_LDFLAGS})

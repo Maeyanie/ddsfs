@@ -1,0 +1,4 @@
+#cmakedefine USE_JPG 1
+#cmakedefine USE_WEBP 1
+#cmakedefine USE_GZIP 1
+#cmakedefine USE_XZ 1

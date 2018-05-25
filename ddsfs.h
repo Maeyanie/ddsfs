@@ -9,6 +9,14 @@
 
 #define MINSIZE 16
 
+#include <unordered_map>
+#include <string>
+
+enum {
+	CACHE_NONE,
+	CACHE_DISK,
+	CACHE_MEM,
+};
 extern struct Config {
 	char* basepath;
 	unsigned int cache;
@@ -18,6 +26,7 @@ extern struct Config {
 	// ASan reports fuse option parsing going off the end of the array, and I can't be bothered fixing fuse.
 	char deadspace[32];
 } config;
+
 
 struct DDS_PIXELFORMAT {
 	unsigned int dwSize;
@@ -56,6 +65,12 @@ void halveimage(const unsigned char* src, int width, int height, unsigned char* 
 int dds_size(int width, int height, int alpha=0);
 int sizecache_get(const char* name);
 void sizecache_set(const char* name, int size);
+
+void memcache_init();
+int memcache_getfd(const std::string& name);
+int memcache_store(const std::string& name, unsigned char* dds, unsigned int len);
+int memcache_read(int fd, char* buf, size_t size, off_t offset);
+int memcache_release(int fd);
 
 #if USE_JPG
 int ddsfs_jpg_header(const char* src, int* width, int* height);
