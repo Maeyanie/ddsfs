@@ -11,13 +11,19 @@ static unordered_map<string,int> sizecache;
 
 
 int dds_size(int width, int height, int alpha) {
-	int pixels = 0;
+	if (!poweroftwo(width) || !poweroftwo(height)) return width * height * 4;
+	
+	/*int pixels = 0;
 	int mips = 0;
 	// This really seems like it could be done with a single formula.
 	while ((height >> mips) >= MINSIZE && (width >> mips) >= MINSIZE) {
 		pixels += (height >> mips) * (width >> mips);
 		mips++;
-	}
+	}*/
+	
+	// I *think* this works...
+	int pixels = (((height<<1)-1)-((MINSIZE<<1)-1)) * (((width<<1)-1)-((MINSIZE<<1)-1));
+	
 	if (config.compress) {
 		if (alpha) return sizeof(DDS_HEADER) + (pixels);
 		return sizeof(DDS_HEADER) + (pixels/2);
