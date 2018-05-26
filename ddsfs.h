@@ -19,6 +19,9 @@ enum {
 };
 extern struct Config {
 	char* basepath;
+	char* cachepath;
+	unsigned short basepathlen;
+	unsigned short cachepathlen;
 	unsigned int cache;
 	char compress;
 	char debug;

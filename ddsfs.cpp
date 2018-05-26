@@ -22,6 +22,7 @@
 #include <string.h>
 #include <strings.h>
 #include <unistd.h>
+#include <libgen.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -53,6 +54,7 @@ static struct fuse_opt ddsfs_opts[] = {
 	DDSFS_OPT("rgb",			compress, 0),
 	DDSFS_OPT("cache",			cache, 1),
 	DDSFS_OPT("cache=%i",		cache, 0),
+	DDSFS_OPT("cachepath=%s",	cachepath, 0),
 	DDSFS_OPT("nocache",		cache, 0),
 	DDSFS_OPT("size",			size, 1),
 	DDSFS_OPT("nosize",			size, 0),
@@ -103,14 +105,28 @@ static int ddsfs_opt_proc(void *data, const char *arg, int key, struct fuse_args
 }
 
 
+static void mkpath(const char* path) {
+	char rwpath[strlen(path)+1];
+	strcpy(rwpath, path);
+	
+	for (char* i = rwpath+1; *i; i++) {
+		if (*i == '/' || *i == '\\') {
+			*i = 0;
+			mkdir(rwpath, 0755);
+			*i = '/';
+		}
+	}
+}
+
 static int ddsfs_getattr(const char *path, struct stat *stbuf)
 {
 	int res;
-	char origpath[strlen(config.basepath)+strlen(path)+1];
-	char rwpath[strlen(config.basepath)+strlen(path)+8];
+	char origpath[config.basepathlen+strlen(path)+1];
+	char rwpath[config.basepathlen+strlen(path)+8];
 	char* ext;
 
-	sprintf(origpath, "%s%s", config.basepath, path);
+	strcpy(origpath, config.basepath);
+	strcat(origpath, path);
 	strcpy(rwpath, origpath);
 	if (DEBUG >= 3) printf("getattr: %s\n", rwpath);
 
@@ -119,6 +135,16 @@ static int ddsfs_getattr(const char *path, struct stat *stbuf)
 		if (DEBUG >= 3) printf("getattr: lstat failed on '%s', looking for alternates.\n", rwpath);
 		ext = strrchr(rwpath, '.');
 		if (!ext) return -errno;
+		
+		if (config.cachepath) {
+			char cpath[config.cachepathlen+strlen(path)+1];
+			strcpy(cpath, config.cachepath);
+			strcat(cpath, path);
+			
+			res = lstat(cpath, stbuf);
+			if (res != -1) return 0;
+		}
+		
 		if (!strcasecmp(ext, ".dds")) {
 			#if USE_JPG
 			strcpy(ext, ".jpg");
@@ -209,7 +235,7 @@ static int ddsfs_getattr(const char *path, struct stat *stbuf)
 
 static int ddsfs_access(const char *path, int mask)
 {
-	char rwpath[strlen(config.basepath)+strlen(path)+1];
+	char rwpath[config.basepathlen+strlen(path)+1];
 	int res;
 
 	sprintf(rwpath, "%s%s", config.basepath, path);
@@ -356,7 +382,7 @@ static int ddsfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 static int ddsfs_open(const char *path, struct fuse_file_info *fi)
 {
 	int res;
-	char rwpath[strlen(config.basepath)+strlen(path)+1];
+	char rwpath[config.basepathlen+strlen(path)+1];
 	char* ext;
 	struct stat st;
 	
@@ -367,16 +393,28 @@ static int ddsfs_open(const char *path, struct fuse_file_info *fi)
 	if (res == -1) {
 		ext = strrchr(rwpath, '.');
 		if (!ext) return -errno;
+		
 		if (DEBUG) printf("\tOpening file which does not exist.\n");
 		char srcpath[strlen(rwpath)+8];
 		unsigned char* dds = NULL;
 		int len = 0;
 		
 		if (config.cache != CACHE_DISK) {
-			int fd = memcache_getfd(rwpath);
-			if (fd > 0) {
-				if (DEBUG) printf("memcache: Using FD %d for existing reference.\n", fd);
-				fi->fh = fd;
+			res = memcache_getfd(rwpath);
+			if (res > 0) {
+				if (DEBUG) printf("\tmemcache: Using FD %d for existing reference.\n", res);
+				fi->fh = res;
+				return 0;
+			}
+		}
+		
+		if (config.cachepath) {
+			char cpath[config.cachepathlen+strlen(path)+1];
+			sprintf(cpath, "%s%s", config.cachepath, path);
+			res = open(cpath, fi->flags);
+			if (res != -1) {
+				if (DEBUG) printf("\tFound file in cachepath: %s\n", cpath);
+				fi->fh = res;
 				return 0;
 			}
 		}
@@ -437,22 +475,34 @@ static int ddsfs_open(const char *path, struct fuse_file_info *fi)
 		if (!dds) return -ENOENT;
 
 		if (config.cache == CACHE_DISK) {
-			if (DEBUG >= 2) printf("cache: Writing %d bytes to '%s'\n", len, rwpath);
-			int fd = open(rwpath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-			if (fd == -1) {
-				fprintf(stderr, "cache: Could not open '%s' for write.\n", rwpath);
-				free(dds);
-				return -errno;
+			int fd;
+			if (config.cachepath) {
+				char cpath[config.cachepathlen+strlen(path)+1];
+				sprintf(cpath, "%s%s", config.cachepath, path);
+				if (DEBUG >= 2) printf("cache: Writing %d bytes to '%s'\n", len, cpath);
+				mkpath(cpath);
+				fd = open(cpath, O_RDWR | O_CREAT | O_TRUNC, 0644);
+				if (fd == -1) {
+					fprintf(stderr, "cache: Could not open '%s' for write.\n", cpath);
+					free(dds);
+					return -errno;
+				}
+			} else {
+				if (DEBUG >= 2) printf("cache: Writing %d bytes to '%s'\n", len, rwpath);
+				fd = open(rwpath, O_RDWR | O_CREAT | O_TRUNC, 0644);
+				if (fd == -1) {
+					fprintf(stderr, "cache: Could not open '%s' for write.\n", rwpath);
+					free(dds);
+					return -errno;
+				}
 			}
+			
 			len = write(fd, dds, len);
-			close(fd);
 			free(dds);
 			if (DEBUG >= 2) printf("cache: Wrote %d bytes.\n", len);
 			
-			res = open(rwpath, fi->flags);
-			if (DEBUG >= 2) printf("cache: Reopen returned %d.\n", res);
-			if (res == -1) return -errno;
-			fi->fh = res;
+			lseek(fd, 0, SEEK_SET);
+			fi->fh = fd;
 			return 0;
 		} else {
 			int fd = memcache_getfd(rwpath);
@@ -475,14 +525,13 @@ static int ddsfs_open(const char *path, struct fuse_file_info *fi)
 	return 0;
 }
 
-static int ddsfs_read(const char *path, char *buf, size_t size, off_t offset,
-		    struct fuse_file_info *fi)
+static int ddsfs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
 	int fd;
 	int res;
 
 	if (fi == NULL) {
-		char rwpath[strlen(config.basepath)+strlen(path)+1];
+		char rwpath[config.basepathlen+strlen(path)+1];
 		sprintf(rwpath, "%s%s", config.basepath, path);
 		fd = open(path, O_RDONLY);
 		if (DEBUG) printf("read: Called with no info for file '%s'\n", path);
@@ -535,6 +584,9 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "Usage: %s <scenery> <mount>\n", args.argv[0]);
 		return 1;
 	}
+	
+	config.basepathlen = strlen(config.basepath);
+	if (config.cachepath) config.cachepathlen = strlen(config.cachepath);
 	
 	printf("Starting: basepath=%s cache=%d format=%s\n", config.basepath, config.cache, config.compress?"DXT":"RGB");
 	int ret = fuse_main(args.argc, args.argv, &oper, NULL);
